@@ -13,6 +13,7 @@ Usage:
 
 Examples:
   sort_vcf file.vcf  
+  sort_vcf file.vcf.gz
   gzip -dc file.vcf.gz | sort_vcf -s -n > file_sorted.vcf
   
 
@@ -30,6 +31,7 @@ import docopt
 import subprocess, sys, os, datetime, time, re
 import string
 import random
+import gzip
 
 # Order to sort contigs by
 STD_CONTIGS = ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","X","Y"]
@@ -75,8 +77,13 @@ if __name__ == '__main__':
       if sys.stdin.isatty(): error('No filename or input provided.')
       input_handle = sys.stdin
     else:
-      input_handle = open( filename, 'r')
-     
+
+      try:
+        if filename.endswith(".gz"): input_handle = gzip.open( aFile,'r')
+        else: input_handle = open( filename, "r")
+      except:
+        error("Could not open file '%s'" % aFile)
+  
 
     tmp_dir = args['--tmpdir']
     if (not tmp_dir or len( tmp_dir) == 0): tmp_dir = "."
@@ -183,9 +190,4 @@ if __name__ == '__main__':
 
 
     sys.exit( 0)
-
-
-    #if not filename or len( filename) == 0:
-    #        sys.stderr.write( "ERROR: File not specified.\n")
-    #        sys.exit(-1)
 
