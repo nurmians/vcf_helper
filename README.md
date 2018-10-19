@@ -1,4 +1,4 @@
-# vcf_helper
+# VCF helper
 Python scripts for DNA sequencing data VCF (Variant Call File) manipulation, sorting and comparison.
 
 
@@ -11,9 +11,9 @@ or STDIN and the sorted output is directed to STDOUT. Contigs otside of chomosom
 order they are encountered in the input.
 
 Examples:
-  sort_vcf file.vcf  
-  sort_vcf file.vcf.gz
-  gzip -dc file.vcf.gz | sort_vcf -s -n > file_sorted.vcf
+  sort_vcf.py file.vcf  
+  sort_vcf.py file.vcf.gz
+  gzip -dc file.vcf.gz | sort_vcf.py -s -n > file_sorted.vcf
 
 
 # comp_vcf.py
@@ -35,7 +35,7 @@ same order in each file. Using the flag -s ignores all calls in non-standard
 contigs to eliminate this problem.
 
 Examples:
-  comp_vcf file.vcf  
-  comp_vcf --names file1,file2,file3 ~/file1.vcf /data/file2.vcf ~/file3.vcf
+  comp_vcf.py file.vcf  
+  comp_vcf.py --names file1,file2,file3 ~/file1.vcf /data/file2.vcf ~/file3.vcf
   
   
