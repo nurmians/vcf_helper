@@ -13,7 +13,7 @@ Usage:
 
 Examples:
   sort_vcf file.vcf  
-  sort_vcf file.vcf.gz
+  sort_vcf file.vcf.gz > file_sorted.vcf
   gzip -dc file.vcf.gz | sort_vcf -s -n > file_sorted.vcf
   
 
@@ -79,10 +79,10 @@ if __name__ == '__main__':
     else:
 
       try:
-        if filename.endswith(".gz"): input_handle = gzip.open( aFile,'r')
+        if filename.endswith(".gz"): input_handle = gzip.open( filename,'r')
         else: input_handle = open( filename, "r")
       except:
-        error("Could not open file '%s'" % aFile)
+        error("Could not open file '%s'" % filename)
   
 
     tmp_dir = args['--tmpdir']
