@@ -33,7 +33,8 @@ Options:
   -n --names=NAMES     Column name for each input file (separate by commas)
   -b --baseratios      Calculate and print (with --report) base substitution 
                        ratios
-  -i --indels          Compare indels only (not implemented yet)
+  -i --ignore_indels   Skip indels
+  -c --coordinates     Do comparison basen on contig and coordinate only
 
 """
 
@@ -149,7 +150,7 @@ def PrintReport( aFile, aName=None, aPrintBaseRatios=False):
 
 
 #Generator
-def VcfIter( vcf_filename, aOnlyStandardContigs=False):
+def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False):
 
     try:
       if vcf_filename.endswith(".gz"): file = gzip.open( vcf_filename,'r')
@@ -173,6 +174,7 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False):
             cols[ 0] = cols[ 0][3:]      
 
           if aOnlyStandardContigs and cols[ 0] not in STD_CONTIGS: continue
+          if aIgnoreIndels and (len( cols[ 3]) != 1 or len( cols[ 4]) != 1): continue #Skip indels
 
         except:
           warning( "Bad line format on line %i in file '%s'" % (linenum, vcf_filename))
@@ -235,13 +237,16 @@ def MinIndex( aDataCols ):
   return None
 
 
-def Equal( aRow1, aRow2):
+def Equal( aRow1, aRow2, aCoordinatesOnly=False):
   ##CHROM  POS     ID      REF     ALT  
   if aRow1 == None or aRow2 == None: return False
-  return aRow1[ 0] == aRow2[ 0] and aRow1[ 1] == aRow2[ 1] and aRow1[ 4] == aRow2[ 4]
+  #return aRow1[ 0] == aRow2[ 0] and aRow1[ 1] == aRow2[ 1] and aRow1[ 4] == aRow2[ 4]
+  if aRow1[ 0] == aRow2[ 0] and aRow1[ 1] == aRow2[ 1]:
+    if coordinates_only: return True
+    return aRow1[ 4] == aRow2[ 4]
 
 
-def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False):
+def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aIgnoreIndels=False, aCoordinatesOnly=False):
 
   n_files = len( aFiles)
 
@@ -273,10 +278,10 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False):
 
   for filename in aFiles:
 
-    file_iters.append( VcfIter( filename, aOnlyStandardContigs))
+    file_iters.append( VcfIter( filename, aOnlyStandardContigs, aIgnoreIndels))
     data = file_iters[ -1].next()
     if data == None:
-      error( "File '%s' has no data rows.")
+      error( "File '%s' has no data rows." % filename)
     file_data.append( data)
 
 
@@ -288,7 +293,7 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False):
     if mi == None: break # All Done?
 
     # Compare with self also
-    rr = [Equal( file_data[ mi], file_data[ x]) for x in range( n_files)]
+    rr = [Equal( file_data[ mi], file_data[ x], aCoordinatesOnly) for x in range( n_files)]
     #print "RR:", rr
 
     #Save results
@@ -370,9 +375,11 @@ if __name__ == '__main__':
     only_standard = False
     if bool(args['--standard']): only_standard = True
 
-    #TODO
-    only_indels = False
-    if bool(args['--indels']): only_indels = True
+    coordinates_only = False
+    if bool(args['--coordinates']): coordinates_only = True
+
+    ignore_indels = False
+    if bool(args['--ignore_indels']): ignore_indels = True
 
     baseratios = False
     if bool(args['--baseratios']): baseratios = True
@@ -411,7 +418,7 @@ if __name__ == '__main__':
       for f in range( n_files):      
         PrintReport( filenames[ f], None if f >= len( col_names) else col_names[ f], baseratios)
 
-    CompareFiles( filenames, col_names, only_standard)
+    CompareFiles( filenames, col_names, only_standard, ignore_indels)
 
 
 
