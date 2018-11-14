@@ -14,7 +14,7 @@ order they are encountered in the input.
 sort_vcf can accept gzipped (and bgzipped) input, but does not output gzipped data,
 because VCF files are required to be zipped with bgzip (block gzip), which can only
 process complete files (not pipes or streams).
-
+<pre>
 Usage:
   sort_vcf [options] [<file>]
 
@@ -35,7 +35,7 @@ Options:
   -d --disable-sort    Do not sort, only filter (-f) and remove contigs (-s)
   -v --verbose         Report progress to stderr
   -i --indels-only     Output only indels
-
+</pre>
 
 # comp_vcf.py
 
@@ -55,6 +55,7 @@ The non-standard contigs in the files in the comparison need to be in the
 same order in each file. Using the flag -s ignores all calls in non-standard
 contigs to eliminate this problem.
 
+<pre>
 Usage:
   comp_vcf [options] <file>...
 
@@ -71,5 +72,5 @@ Options:
                        ratios
   -i --ignore_indels   Skip indels
   -c --coordinates     Do comparison basen on contig and coordinate only
-  
+  </pre>
   
