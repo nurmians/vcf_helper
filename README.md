@@ -16,7 +16,7 @@ because VCF files are required to be zipped with bgzip (block gzip), which can o
 process complete files (not pipes or streams).
 <pre>
 Usage:
-  sort_vcf [options] [<file>]
+  sort_vcf [options] [&lt;file&gt;]
 
 Examples:
   sort_vcf file.vcf
@@ -57,7 +57,7 @@ contigs to eliminate this problem.
 
 <pre>
 Usage:
-  comp_vcf [options] <file>...
+  comp_vcf [options] &lt;file&gt;...
 
 Examples:
   comp_vcf file.vcf
