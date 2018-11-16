@@ -32,15 +32,15 @@ Options:
   -s --standard        Ignore non-standard chromosomes (chr1-22,X,Y)
   -n --names=NAMES     Column name for each input file (separate by commas)
   -b --baseratios      Calculate and print (with --report) base substitution 
-                       ratios
-  -i --ignore_indels   Skip indels
+                       ratios.
+  -i --ignore_indels   Skip (ignore) indels.
   -c --coordinates     Do comparison basen on contig and coordinate only
   -d --different       Output rows of the first input file that are not 
                        found in the second file.
   -m --matching        Output rows of the first input file that are not 
                        found in the second file.
   -w --swap            Swap the first and second input files.
-  -f --filter=STR      Ignore files without STR.
+  -f --filter=STR      Ignore rows without STR.
   -a --add-id=STR      Add STR to ID column of each outputted data row.
 
 """
