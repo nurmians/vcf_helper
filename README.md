@@ -46,18 +46,21 @@ Options:
 A tool for comparing VCFs (Variant Call Files) and reporting common and unique
 called variants in each file. The VCF files must be sorted to the exact same
 chromosomal and coordinate order. If only one input file is specified comp_vcf
-will reports statistics on that file.
+will reports statistics on that file. 
 
-The output contains two matrices: (i) Comparison matrix shows the number of
-matching variant calls (rows) between eavery two files included in the
-comparison. (ii) Count matrix shows for each file in how many of the other
+The output contains two matrices: (i) Comparison matrix shows the number of 
+matching variant calls (rows) between eavery two files included in the 
+comparison. (ii) Count matrix shows for each file in how many of the other 
 files in the comaprison each call is found in. Calls shown on row "IN 1"
 are unique to that file and not found in any of the other files in the
 comparison. Calls found in one other file are shown on row "IN 2", and so on.
 
-The non-standard contigs in the files in the comparison need to be in the
-same order in each file. Using the flag -s ignores all calls in non-standard
-contigs to eliminate this problem.
+The non-standard contigs in the files in the comparison need to be in the 
+same order in each file. Using the flag -s ignores all calls in non-standard 
+(special) contigs to eliminate this problem.
+
+Standart contig names with "chr" prefix can be compared with contigs without
+the prefix, e.g. contig "1" matches "chr1".
 
 <pre>
 Usage:
