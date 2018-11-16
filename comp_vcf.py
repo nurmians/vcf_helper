@@ -17,7 +17,10 @@ comparison. Calls found in one other file are shown on row "IN 2", and so on.
 
 The non-standard contigs in the files in the comparison need to be in the 
 same order in each file. Using the flag -s ignores all calls in non-standard 
-contigs to eliminate this problem.
+(special) contigs to eliminate this problem.
+
+Standart contig names with "chr" prefix can be compared with contigs without
+the prefix, e.g. contig "1" matches "chr1".
 
 Usage:
   comp_vcf [options] <file>...
@@ -40,7 +43,7 @@ Options:
   -m --matching        Output rows of the first input file that are not 
                        found in the second file.
   -w --swap            Swap the first and second input files.
-  -f --filter=STR      Ignore rows without STR.
+  -f --filter=STR      Ignore data rows without STR.
   -a --add-id=STR      Add STR to ID column of each outputted data row.
 
 """
