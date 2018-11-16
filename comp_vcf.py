@@ -35,6 +35,13 @@ Options:
                        ratios
   -i --ignore_indels   Skip indels
   -c --coordinates     Do comparison basen on contig and coordinate only
+  -d --different       Output rows of the first input file that are not 
+                       found in the second file.
+  -m --matching        Output rows of the first input file that are not 
+                       found in the second file.
+  -w --swap            Swap the first and second input files.
+  -f --filter=STR      Ignore files without STR.
+  -a --add-id=STR      Add STR to ID column of each outputted data row.
 
 """
 
@@ -150,7 +157,7 @@ def PrintReport( aFile, aName=None, aPrintBaseRatios=False):
 
 
 #Generator
-def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False):
+def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aFilter=None):
 
     try:
       if vcf_filename.endswith(".gz"): file = gzip.open( vcf_filename,'r')
@@ -166,12 +173,13 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False):
         linenum += 1
         if not line or len( line) == 0: continue
         elif line.startswith("#"): continue
+        elif aFilter != None and line.find( aFilter) < 0: continue        
         ##CHROM  POS     ID      REF     ALT  
         try:
           cols = line.split("\t", 5)
           cols[ 1] = int( cols[ 1])
-          if cols[ 0].startswith("chr"): 
-            cols[ 0] = cols[ 0][3:]      
+          #if cols[ 0].startswith("chr"): 
+          #  cols[ 0] = cols[ 0][3:]      
 
           if aOnlyStandardContigs and cols[ 0] not in STD_CONTIGS: continue
           if aIgnoreIndels and (len( cols[ 3]) != 1 or len( cols[ 4]) != 1): continue #Skip indels
@@ -224,7 +232,7 @@ def MinIndex( aDataCols ):
 
   #[ expression for item in list if conditional ]
   min_indices = [x for x in range( n_datacols) if chr_order[ x] == min_chr]
-  coordinates = [aDataCols[ x][ 1] for x in min_indices]
+  coordinates = [int( aDataCols[ x][ 1]) for x in min_indices]
   min_coord = min( coordinates)
 
   for i in min_indices:
@@ -243,10 +251,12 @@ def Equal( aRow1, aRow2, aCoordinatesOnly=False):
   #return aRow1[ 0] == aRow2[ 0] and aRow1[ 1] == aRow2[ 1] and aRow1[ 4] == aRow2[ 4]
   if aRow1[ 0] == aRow2[ 0] and aRow1[ 1] == aRow2[ 1]:
     if coordinates_only: return True
-    return aRow1[ 4] == aRow2[ 4]
+    return aRow1[ 4] == aRow2[ 4]    
+  return False
 
 
-def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aIgnoreIndels=False, aCoordinatesOnly=False):
+def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, aIgnoreIndels=False, 
+                  aCoordinatesOnly=False, aPrintMatching=False, aPrintDifferent=False, aIdAddition=None):
 
   n_files = len( aFiles)
 
@@ -264,7 +274,7 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aIgnoreIndels=F
   #sys.stdout.write( "\n")
 
   # NOTE: Do not init matrices this way
-  # rows will be references to a single array
+  #       rows will be references to a single list
   # comp_matrix = [[0]*n_files]*n_files
   # count_matrix = [[0]*n_files]*n_files
   #
@@ -276,9 +286,11 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aIgnoreIndels=F
   file_data = []
   finished = [False]*n_files  
 
+  # Create line generators
   for filename in aFiles:
 
-    file_iters.append( VcfIter( filename, aOnlyStandardContigs, aIgnoreIndels))
+    # Data is returned as a list of column values
+    file_iters.append( VcfIter( filename, aOnlyStandardContigs, aIgnoreIndels, aFilter))
     data = file_iters[ -1].next()
     if data == None:
       error( "File '%s' has no data rows." % filename)
@@ -289,30 +301,42 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aIgnoreIndels=F
 
   while True:
 
+    # Find one of the iterators with the smallest contig & coordinate
+    # (multiple iterators can be on the same contig & coordinate)
+    # and compare it to all other iterators.
     mi = MinIndex( file_data)
     if mi == None: break # All Done?
 
     # Compare with self also
     rr = [Equal( file_data[ mi], file_data[ x], aCoordinatesOnly) for x in range( n_files)]
-    #print "RR:", rr
+    #print "RR:", rr # DEBUG
 
-    #Save results
+    # Save results
     trues = [i for i, x in enumerate(rr) if x == True]
-    n_trues = len( trues)
-    #print "TRues", trues 
+    n_trues = len( trues)    
+    #print "TRUES", trues # DEBUG
+
+    # Only two files in comparison
+    if aPrintMatching and (all( rr) == True):
+      if aIdAddition != None: file_data[ 0][ 2] = str( aIdAddition)
+      sys.stdout.write( "\t".join( map( str, file_data[ 0])))
+    if aPrintDifferent and rr[ 0] == True and rr[ 1] == False:
+      if aIdAddition != None: file_data[ 0][ 2] = str( aIdAddition)
+      sys.stdout.write( "\t".join( map( str, file_data[ 0])))
 
     # Self comparison (diagonal)
+    # set diagonal true
     for t in trues: 
     #  print "self:", t
       comp_matrix[ t][ t] += 1
 
+    # +1 to all relevant matrix cells
     combinations = itertools.combinations( trues, 2)
     for row, col in combinations:
       comp_matrix[ row][ col] += 1
       # Mirrored element
       comp_matrix[ col][ row] += 1 
-      pass     
-
+  
     for a in range( n_files):
 
       if finished[ a] == True: continue
@@ -329,6 +353,10 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aIgnoreIndels=F
         else: total[ a] += 1
 
     if all( finished) == True: break
+  
+  # With flags --different or --matching
+  # Do not print statistics
+  if aPrintMatching or aPrintDifferent: return
 
   print ""
   print "Total number of calls in each file:"
@@ -354,17 +382,6 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aIgnoreIndels=F
 
 
 
-
-
-
-
-
-
-
-
-
-
-
 if __name__ == '__main__':
 
     args = docopt.docopt(__doc__)
@@ -384,8 +401,18 @@ if __name__ == '__main__':
     baseratios = False
     if bool(args['--baseratios']): baseratios = True
 
+    different = False
+    if bool(args['--different']): different = True
+
+    add_id = args['--add-id']     
+
+    matching = False
+    if bool(args['--matching']): matching = True
+
     filenames = args['<file>']    
     n_files = len( filenames)
+    
+    if bool(args['--swap']): filenames = filenames[::-1]
 
     col_names = args['--names']
     if col_names == None or len( col_names) == 0: col_names = []
@@ -393,8 +420,15 @@ if __name__ == '__main__':
       col_names = col_names.split(",")
       if n_files != len( col_names): warning( "Number of names should equal number of input files (%ivs.%i)" % (len(names),n_files))
 
+    filterstr = args['--filter']
+
     # Check that all files exists
     non_existent_files = []
+
+    if different == True and n_files != 2:
+      error("Option '--different' requires exactly two input files.")
+    if matching == True and n_files != 2:
+      error("Option '--matching' requires exactly two input files.")
 
     for f in filenames:      
       if not os.path.isfile( f): 
@@ -417,16 +451,12 @@ if __name__ == '__main__':
     if report:
       for f in range( n_files):      
         PrintReport( filenames[ f], None if f >= len( col_names) else col_names[ f], baseratios)
-
-    CompareFiles( filenames, col_names, only_standard, ignore_indels)
-
-
-
-
-
-
-
-    #print "Filenames:", filenames
+    
+    CompareFiles( filenames, col_names, only_standard, filterstr, ignore_indels, 
+                  aCoordinatesOnly=coordinates_only, aPrintMatching=matching, aPrintDifferent=different,
+                  aIdAddition=add_id)
+    
+    #print "Processed filenames:", filenames
     sys.exit(0)
    
 
