@@ -64,17 +64,24 @@ Usage:
   comp_vcf [options] &lt;file&gt;...
 
 Examples:
-  comp_vcf file.vcf
+  comp_vcf file.vcf  
   comp_vcf --names file1,file2,file3 ~/file1.vcf /data/file2.vcf ~/file3.vcf
-
+  
 
 Options:
   -r --report          Include statistics of individual files in output
   -s --standard        Ignore non-standard chromosomes (chr1-22,X,Y)
   -n --names=NAMES     Column name for each input file (separate by commas)
-  -b --baseratios      Calculate and print (with --report) base substitution
-                       ratios
+  -b --baseratios      Calculate and print (with --report) base substitution 
+                       ratios.
   -i --ignore_indels   Skip indels
   -c --coordinates     Do comparison basen on contig and coordinate only
+  -d --different       Output rows of the first input file that are not 
+                       found in the second file.
+  -m --matching        Output rows of the first input file that are not 
+                       found in the second file.
+  -w --swap            Swap the first and second input files.
+  -f --filter=STR      Ignore files without STR.
+  -a --add-id=STR      Add STR to ID column of each outputted data row.
   </pre>
   
