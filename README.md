@@ -15,7 +15,7 @@ sort_vcf can accept gzipped (and bgzipped) input, but does not output gzipped da
 because VCF files are required to be zipped with bgzip (block gzip), which can only
 process complete files (not pipes or streams).
 
-Useful features of this script are also the ability to remove all special contigs
+Another useful feature of this script is the ability to remove all special contigs
 (-s) and to make contig naming consistent between different files ("chr1" vs. "1").
 
 <pre>
