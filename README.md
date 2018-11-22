@@ -1,13 +1,12 @@
 # VCF helper
 Python scripts for DNA sequencing data VCF (Variant Call File) manipulation, sorting and comparison.
 
-
 # sort_vcf.py
 
 
-A tool for sorting VCF (Variant Call File) into numerical order based on the contig
-numbering. This tool uses the UNIX sort command. Input can be provided from a file
-or STDIN and the sorted output is directed to STDOUT. Contigs otside of chomosomes
+A tool for sorting VCF (Variant Call File) data based on contig and coordinate 
+numbering by using the UNIX sort command. Input can be provided from a file or 
+STDIN and the sorted output is directed to STDOUT. Contigs outside of chomosomes
 1-22, X and Y will be sorted by coordinate and added to the end of the file in the
 order they are encountered in the input.
 
