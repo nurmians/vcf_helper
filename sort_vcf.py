@@ -22,17 +22,20 @@ Examples:
   
 
 Options:
-  -c --chr-prefix      Use chr prefix for standard contigs (chr1-chr22,X,Y) in 
-                       the output [default].
-  -n --no-prefix       Output standard contigs without the chr prefix.
-  -t --tmpdir=DIR      Directory for storing temporary files
-  -f --filter=STR      Discard data rows without STR
-  -s --standard        Output only standard chomosomes (chr1-chr22,X,Y)
-  -a --add-contig=CON  Add contigs to std set of contigs, separate by commas      
-  -p --processes=N     Maximum number of worker processes to use [default:1]
-  -d --disable-sort    Do not sort, only filter (-f) and remove contigs (-s)
-  -v --verbose         More output
-  -i --indels-only     Output only indels
+  -c --chr-prefix       Use chr prefix for standard contigs (chr1-chr22,X,Y) in 
+                        the output [default].
+  -n --no-prefix        Output standard contigs without the chr prefix.
+  -t --tmpdir=DIR       Directory for storing temporary files
+  -f --filter=STR       Discard data rows without STR
+  -s --standard         Output only standard chomosomes (chr1-chr22,X,Y)
+  -a --add-contig=CON   Add contigs to std set of contigs, separate by commas      
+  -p --processes=N      Maximum number of worker processes to use [default:1]
+  -d --disable-sort     Do not sort, only filter (-f) and remove contigs (-s)
+  -v --verbose          More output
+  -i --indels-only      Output only indels
+  -k --keep-duplicates  Do not remove duplicates (same chrom, coord & alt)
+  -b --bed=FILE         Remove calls outside of specified ranges
+  -r --remove           Remove all header and comment lines
 
 
 """
@@ -49,8 +52,13 @@ import subprocess
 import shlex
 from multiprocessing.pool import ThreadPool
 
+from sys import platform
+
+
+
 # Order to sort contigs by
 STD_CONTIGS = ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","X","Y"]
+STD_CONTIGS_DICT = { c : True for c in STD_CONTIGS } 
 
 def error( aMsg):
   sys.stderr.write( "ERROR: "+aMsg+"\n" )
@@ -66,6 +74,10 @@ def info( aMsg):
 CONTIG_PATTTERN = re.compile("(##contig=<ID=)(?:chr)*(.*?)([,>].*$)")
 UNEXPECTED_EXIT = True
 REMOVABLE_TMP_FILES =[]
+
+if platform != "linux" and platform != "linux2":
+    error("This program requires the Linux sort algorithm.")
+    sys.exit( -1)
 
 def ExitHandler():
 
@@ -92,6 +104,65 @@ def EditContig( aLine, aChrPrefix=True, aOnlyStandard=True):
     if aOnlyStandard and not is_standard: return ""
 
     return m.group( 1) + ("chr" if (aChrPrefix and is_standard) else "") + m.group( 2) + m.group( 3) + "\n"
+
+
+
+BED = {}
+
+def ReadBed( aFilename):
+
+  n_contigs = 0
+  n_ranges = 0
+  try:
+    with open( aFilename) as f:
+      for line in f:
+        if line.startswith("#"): continue #Comments
+        if line.startswith("CHROM"): continue #Header
+        cols = line.strip().split("\t")
+  
+        chromosome = cols[ 0]
+        start = int(cols[ 1])
+        end = int(cols[ 2])
+        if chromosome.startswith("chr") and chromosome[3:] in STD_CONTIGS: chromosome = chromosome[3:]
+  
+        if chromosome not in BED: 
+          BED[ chromosome] = []
+          n_contigs += 1
+        BED[ chromosome].append([start,end])
+        n_ranges += 1
+  except Exception as ex:
+    error( "Failed to read bed file '%s'. (%s)\n" % (aFilename, str(ex)))
+
+  if len(BED) < 1: error( "Bedfile '%s' contained %i contigs and %i ranges." % (aFilename, n_contigs, n_ranges))
+  info( "Bedfile '%s' contained %i contigs and %i ranges." % (aFilename, n_contigs, n_ranges)) 
+
+  # Sort ranges for each chromosome
+  for k in BED.keys():
+    BED[ k].sort(key=lambda x: x[ 0])
+
+
+
+def IsBedUsed():
+  return len( BED) > 0
+
+BED_WARNED = {}
+
+def IsInBedRange( aChromosome, aCoordinate):
+
+  if len( BED) == 0: return True
+
+  if aChromosome.startswith("chr") and aChromosome[3:] in STD_CONTIGS: aChromosome = aChromosome[3:]
+  if aChromosome not in BED:
+    if aChromosome not in BED_WARNED:
+      warning("Contig '%s' not in bed file." % aChromosome)
+      BED_WARNED[ aChromosome] = True
+    return False
+  for r in BED[aChromosome]:
+    if r[ 0] > aCoordinate: break #start
+    if aCoordinate <= r[ 1]: return True #end
+  return False
+
+
 
 
 def call_proc( cmd):
@@ -123,6 +194,15 @@ if __name__ == '__main__':
     verbose = False
     if bool(args['--verbose']): verbose = True
 
+    keep_duplicates = False
+    if bool(args['--keep-duplicates']): keep_duplicates = True
+
+    bedfile = args['--bed']
+    if bedfile != None and len( bedfile) > 0: ReadBed( bedfile)
+
+    remove_comments = False
+    remove_comments = args['--remove']
+
     try:
       n_cpus = args['--processes']
       if n_cpus == None: n_cpus = 1
@@ -141,8 +221,8 @@ if __name__ == '__main__':
       try:
         if filename.endswith(".gz"): input_handle = gzip.open( filename,'r')
         else: input_handle = open( filename, "r")
-      except:
-        error("Could not open file '%s'" % filename)
+      except Exception as ex:
+        error("Could not open file '%s'. (%s)" % (filename,str(ex)))
   
 
     tmp_dir = args['--tmpdir']
@@ -164,22 +244,34 @@ if __name__ == '__main__':
       if not os.path.isfile( tmpfilename_template % "1"): break #Make sure it does not exist
 
     header = []
+    is_dup = False
+    n_duplicates = 0
+    prev = "?"
+    line_num = 0
+    in_bed_range = 0    
+    in_bed_checked = 0
+    header_ended = False
+    comments_warned = False
 
     # Process input
     # Sort lines into separate files based on the contig
     if verbose: info( "Splitting input file by contig...")
 
     for line in input_handle:
+      line_num += 1
       cols = line.strip().split("\t")
       contig = ""
 
       if cols[ 0].startswith("#"):
         # Reformat header contig lines
+        if header_ended and not comments_warned and not remove_comments: 
+          warning("Encountered comment line outside of header on line %i." % line_num)
+          comments_warned = True
         line = EditContig( line, len(prefix)>0, only_standard)
         if len( line) > 0: header.append( line)
         continue
-      else:
-        if cols[ 0].startswith("chr"): 
+      else:        
+        if cols[ 0].startswith("chr") and cols[ 0][3:] in STD_CONTIGS_DICT: 
           contig = cols[ 0][3:]
           line = line[3:] # TODO: better ways to do this
         else: contig = cols[ 0]
@@ -189,13 +281,35 @@ if __name__ == '__main__':
           continue 
 
         if len( contig) == 0: 
-          warning( "Skipping line: '%s'" % line)
+          warning( "Skipping line %i: '%s'" % (line_num, line[:50]))
           continue       
 
-        if contig not in STD_CONTIGS and contig not in non_standard_contigs:
+        header_ended = True
+
+        # Standard contig check
+        if contig not in STD_CONTIGS_DICT and contig not in non_standard_contigs:
           if only_standard: continue 
           non_standard_contigs.append( contig)  
 
+        # Duplicate line removal
+        # CHROM  POS     ID      REF     ALT     QUAL    FILTER  INFO
+        if not keep_duplicates:
+          cur = "".join(cols[:5]) # join up to ALT
+          if cur == prev:
+            n_duplicates += 1
+            if verbose or n_duplicates <= 10:
+              warning( "Skipping duplicate line %i: '%s'" % (line_num, line[:50]))
+              if not verbose and n_duplicates == 10: warning("Only first 10 duplicate lines warned.")
+            continue
+          prev = cur        
+
+        # BED file filtering
+        if IsBedUsed():
+          in_bed_checked += 1
+          try: int_coord = int( cols[ 1])            
+          except: error("Could not convert coordinate '%s' to integer on line %i." % (cols[ 1], line_num))
+          if not IsInBedRange( contig, int_coord): continue
+          in_bed_range += 1
 
       tmpfilename = tmpfilename_template % contig
   
@@ -224,13 +338,15 @@ if __name__ == '__main__':
         # No prefix
         tmp_files[ tmpfilename].write( line)
 
+    if n_duplicates > 0: info( "Skipped %i duplicate line%s." % (n_duplicates, "" if n_duplicates == 1 else "s"))
+
     # Input processed
     # Close tmp files
     for fn, fh in tmp_files.items():
       try: fh.close()
       except: warning( "Could not close file: '%s'." % fn)
 
-    if verbose: info( "Input file splitted.")
+    if verbose: info( "Input file split.")
 
 
     if not disable_sort:
@@ -279,12 +395,13 @@ if __name__ == '__main__':
         except: warning("Could not rename tmp file '%s'" % fn)   
 
     # Print header
-    if verbose: info( "Printing header")
-
-    htf = tmpfilename_template % "header"
-    if len( header) == 0: warning( "File has no header.")
-    else: sys.stdout.write( "".join( header))
-
+    if not remove_comments:
+      if verbose: info( "Printing header")
+  
+      htf = tmpfilename_template % "header"
+      if len( header) == 0: warning( "File has no header.")
+      else: sys.stdout.write( "".join( header))
+  
     # Print data rows
     if verbose: info( "Printing each contig...")
 
@@ -307,6 +424,9 @@ if __name__ == '__main__':
       else:
         if not cont in STD_CONTIGS: warning("File '%s' does not exits." % tfs)
 
+
+    if IsBedUsed():
+      info( "%.1f%% of sorted calls found in bed range." % (float(in_bed_range)/in_bed_checked*100.0))
 
     UNEXPECTED_EXIT = False
     if verbose: info( "All Done.")

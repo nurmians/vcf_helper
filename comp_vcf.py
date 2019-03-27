@@ -34,17 +34,24 @@ Options:
   -r --report          Include statistics of individual files in output
   -s --standard        Ignore non-standard chromosomes (chr1-22,X,Y)
   -n --names=NAMES     Column name for each input file (separate by commas)
-  -b --baseratios      Calculate and print (with --report) base substitution 
+  -e --baseratios      Calculate and print (with --report) base substitution 
                        ratios.
-  -i --ignore_indels   Skip (ignore) indels.
-  -c --coordinates     Do comparison basen on contig and coordinate only
+  -b --bed=FILE        Bed file for specifying genomic intervals. If a 
+                       bed-file is provided, everything outside the bed
+                       ranges is ignored.
+  -g --ignore=FILE     File specifying ranges to ignore in the comparison
+                       (Bed file format).
+  -i --ignore-indels   Skip (ignore) indels.
+  -I --ignore-snvs     Skip (ignore) SNVs (single nucleotide variants).
+  -c --coordinates     Do comparison based on contig and coordinate only
   -d --different       Output rows of the first input file that are not 
                        found in the second file.
-  -m --matching        Output rows of the first input file that are not 
+  -m --matching        Output rows of the first input file that are 
                        found in the second file.
   -w --swap            Swap the first and second input files.
   -f --filter=STR      Ignore data rows without STR.
   -a --add-id=STR      Add STR to ID column of each outputted data row.
+  -p --pretty          Cut outputted lines to 80 chars
 
 """
 
@@ -100,6 +107,9 @@ def PrintReport( aFile, aName=None, aPrintBaseRatios=False):
             "indel":0,
             "del"  :0,
             "ins"  :0,
+            "in_bed_range":0,
+            "not_in_bed_range":0,
+            "n_ignored":0,
             "total":0
   }
 
@@ -126,6 +136,16 @@ def PrintReport( aFile, aName=None, aPrintBaseRatios=False):
     else:
       contigs[ contig] += 1
 
+    if IsIgnUsed() and IsInBedRange( cols[ 0], int(cols[ 1]), IGN): 
+      n_ignored += 1
+      continue
+
+    if IsInBedRange( cols[ 0], int(cols[ 1])): stats["in_bed_range"] += 1
+    else: stats["not_in_bed_range"] += 1
+      #sys.stderr.write( "Not in range: %s %s\n" % (cols[ 0], cols[ 1]))
+
+
+
     ref = cols[ 3]
     alt = cols[ 4]
     if len( ref) == 1 and len( alt) == 1:
@@ -140,7 +160,7 @@ def PrintReport( aFile, aName=None, aPrintBaseRatios=False):
   try: file.close()
   except: pass
 
-  if aName != None:    
+  if aName != None and aName != False:    
     print "\nStatistics for '%s':" % aName
   else:
     print "\nStatistics for file '%s':" % aFile
@@ -150,7 +170,13 @@ def PrintReport( aFile, aName=None, aPrintBaseRatios=False):
   print "Calls per contig: ", ["%s:%i" % (k,contigs[ k]) for k in contig_arr]
 
   for k in stats.keys():
+    if not IsBedUsed() and k == "in_bed_range": continue
+    if not IsBedUsed() and k == "not_in_bed_range": continue
     print "%s: %s" % (k, stats[ k])
+
+  if IsBedUsed() and stats["in_bed_range"]+stats["not_in_bed_range"]>0:
+    print "bed_in_range_percentage : %.1f%%" %  (float(stats["in_bed_range"])/(stats["in_bed_range"]+stats["not_in_bed_range"])*100.0)
+
 
   if aPrintBaseRatios:
     n_subs = int( stats["sub"])
@@ -158,9 +184,31 @@ def PrintReport( aFile, aName=None, aPrintBaseRatios=False):
       print "%s: %3.1f%%" % (k, int(subs[ k]) / float(n_subs)*100.0 )
 
 
+# Some callers prefer to report consecutive substitutions as
+# two ref bases changing into two alt bases e.g. CC -> AT
+# For better comparability these lines are split into two.
+# CC -> AT becomes C -> A + C -> T on the next coordinate
+def SplitVcfTwoToTwo( aVcfLineCols):
+
+  if len( aVcfLineCols[ 3]) != 2 or len( aVcfLineCols[ 4]) != 2:
+    error( "Line '%s' is not a 2 to 2 indel.")
+
+  line1 = aVcfLineCols[:]
+  line2 = aVcfLineCols[:]
+  line1[ 3] = aVcfLineCols[ 3][ 0]
+  line1[ 4] = aVcfLineCols[ 4][ 0]
+
+  #increase coord
+  line2[ 1] = int( aVcfLineCols[ 1]) + 1
+  line2[ 3] = aVcfLineCols[ 3][ 1]
+  line2[ 4] = aVcfLineCols[ 4][ 1]  
+  return (line1, line2)
+
+
+
 
 #Generator
-def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aFilter=None):
+def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgnoreSnvs=False, aFilter=None):
 
     try:
       if vcf_filename.endswith(".gz"): file = gzip.open( vcf_filename,'r')
@@ -170,29 +218,49 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aFil
       error("Could not open file '%s'" % aFile)
 
     linenum = 0
+    prev_cols = [""]*5
+    dupwarned = False
+
 
     for line in file:
 
         linenum += 1
         if not line or len( line) == 0: continue
         elif line.startswith("#"): continue
-        elif aFilter != None and line.find( aFilter) < 0: continue        
-        ##CHROM  POS     ID      REF     ALT  
+        elif aFilter != None and line.find( aFilter) < 0: continue                
+        ##CHROM  POS     ID      REF     ALT  QUAL  PASS   INFO
         try:
           cols = line.split("\t", 5)
           cols[ 1] = int( cols[ 1])
-          #if cols[ 0].startswith("chr"): 
-          #  cols[ 0] = cols[ 0][3:]      
 
-          if aOnlyStandardContigs and cols[ 0] not in STD_CONTIGS: continue
-          if aIgnoreIndels and (len( cols[ 3]) != 1 or len( cols[ 4]) != 1): continue #Skip indels
+          # Remove 'chr 'to be able to compare "chr1" to "1"
+          if cols[ 0].startswith("chr"): 
+            cols[ 0] = cols[ 0][3:]      
 
-        except:
-          warning( "Bad line format on line %i in file '%s'" % (linenum, vcf_filename))
+          if aOnlyStandardContigs and cols[ 0] not in STD_CONTIGS: continue        
+          two_to_two = (len( cols[ 3]) == 2 and len( cols[ 4]) == 2) #indel GG TT changed into two G T substions later
+          if aIgnoreIndels and not two_to_two and (len( cols[ 3]) != 1 or len( cols[ 4]) != 1): continue #Skip indels
+          if aIgnoreSnvs and len( cols[ 3]) == len( cols[ 4]): continue
+          if not IsInBedRange( cols[ 0], int(cols[1])): continue
+          if IsIgnUsed() and IsInBedRange( cols[ 0], int(cols[1]), IGN): continue
+
+        except Exception as ex:
+          warning( "Bad line format on line %i in file '%s'. (%s)" % (linenum, vcf_filename, str(ex)))
           continue
-    
-        yield cols
 
+        if two_to_two:
+          newcols, cols = SplitVcfTwoToTwo( cols)
+          yield newcols
+
+        # Compare columns up to ALT with previously yielded line columns
+        if cols[:5] == prev_cols:
+          if not dupwarned:
+            warning("Skipping duplicate lines in file '%s'." % vcf_filename)
+            dupwarned = True          
+          continue # Skip line
+
+        yield cols
+        prev_cols = cols[:5]
 
     try: file.close()
     except: pass
@@ -258,8 +326,8 @@ def Equal( aRow1, aRow2, aCoordinatesOnly=False):
   return False
 
 
-def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, aIgnoreIndels=False, 
-                  aCoordinatesOnly=False, aPrintMatching=False, aPrintDifferent=False, aIdAddition=None):
+def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, aIgnoreIndels=False, aIgnoreSnvs=False,
+                  aCoordinatesOnly=False, aPrintMatching=False, aPrintDifferent=False, aIdAddition=None, aCurbLinesTo=None):
 
   n_files = len( aFiles)
 
@@ -293,7 +361,7 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
   for filename in aFiles:
 
     # Data is returned as a list of column values
-    file_iters.append( VcfIter( filename, aOnlyStandardContigs, aIgnoreIndels, aFilter))
+    file_iters.append( VcfIter( filename, aOnlyStandardContigs, aIgnoreIndels, aIgnoreSnvs, aFilter))
     data = file_iters[ -1].next()
     if data == None:
       error( "File '%s' has no data rows." % filename)
@@ -322,10 +390,14 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
     # Only two files in comparison
     if aPrintMatching and (all( rr) == True):
       if aIdAddition != None: file_data[ 0][ 2] = str( aIdAddition)
-      sys.stdout.write( "\t".join( map( str, file_data[ 0])))
+      out = "\t".join( map( str, file_data[ 0]))
+      if aCurbLinesTo != None and len( out) > aCurbLinesTo: out = out[:aCurbLinesTo] + "\n"
+      sys.stdout.write( out)
     if aPrintDifferent and rr[ 0] == True and rr[ 1] == False:
       if aIdAddition != None: file_data[ 0][ 2] = str( aIdAddition)
-      sys.stdout.write( "\t".join( map( str, file_data[ 0])))
+      out = "\t".join( map( str, file_data[ 0]))
+      if aCurbLinesTo != None and len( out) > aCurbLinesTo: out = out[:aCurbLinesTo] + "\n"      
+      sys.stdout.write( out)
 
     # Self comparison (diagonal)
     # set diagonal true
@@ -367,21 +439,85 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
     print aNames[ i] + ": " + str( total[ i])
 
   print ""
-  print "##This matrix shows the number of equal calls between two files"
+  if aCurbLinesTo == None:
+    print "##This matrix shows the number of equal calls between two files"
   print "Comparison matrix:"
   print "\t","\t".join( aNames)
   for i in range( n_files):
     print aNames[ i] + ":", "\t".join( map( str, comp_matrix[ i]))
 
   print ""
-  print "##This matrix shows in how many files each call made was found"
+  if aCurbLinesTo == None:
+    print "##This matrix shows in how many files each call made was found"
   print "Count matrix:"
   #print count_matrix
   print "\t","\t".join( aNames)
   for i in range( n_files):
     print ("IN %i:" % (i+1)), "\t".join( map( str, [count_matrix[ x][ i] for x in range( n_files)]))
 
-  print "All Done."
+  if aCurbLinesTo == None:
+    print "All Done."
+
+
+BED = {}
+IGN = {}
+
+def ReadBed( aFilename, aDict=BED):
+
+  n_contigs = 0
+  n_ranges = 0
+  try:
+    with open( aFilename) as f:
+      for line in f:
+        if line.startswith("#"): continue #Comments
+        if line.startswith("CHROM"): continue #Header
+        cols = line.strip().split("\t")
+  
+        chromosome = cols[ 0]
+        start = int(cols[ 1])
+        end = int(cols[ 2])
+        if chromosome.startswith("chr") and chromosome[3:] in STD_CONTIGS: chromosome = chromosome[3:]
+  
+        if chromosome not in aDict: 
+          aDict[ chromosome] = []
+          n_contigs += 1
+        aDict[ chromosome].append([start,end])
+        n_ranges += 1
+  except Exception as ex:
+    error( "Failed to read bed file '%s'. (%s)\n" % (aFilename, str(ex)))
+
+  if len(aDict) < 1: error( "Bedfile '%s' contained %i contigs and %i ranges." % (aFilename, n_contigs, n_ranges))
+  info( "Bedfile '%s' contained %i contigs and %i ranges." % (aFilename, n_contigs, n_ranges)) 
+
+  # Sort ranges for each chromosome
+  for k in aDict.keys():
+    aDict[ k].sort(key=lambda x: x[ 0])
+
+
+
+def IsBedUsed():
+  return len( BED) > 0
+
+def IsIgnUsed():
+  return len( IGN) > 0  
+
+BED_WARNED = {}
+
+def IsInBedRange( aChromosome, aCoordinate, aDict=BED):  
+
+  if len( aDict) == 0: return True
+
+  if aChromosome.startswith("chr") and aChromosome[3:] in STD_CONTIGS: aChromosome = aChromosome[3:]
+  if aChromosome not in aDict:
+    if aChromosome not in BED_WARNED:
+      warning("Contig '%s' not in bed file." % aChromosome)
+      BED_WARNED[ aChromosome] = True
+    return False
+  for r in aDict[aChromosome]:
+    if r[ 0] > aCoordinate: break #start
+    if aCoordinate <= r[ 1]: return True #end
+  return False
+
 
 
 
@@ -399,7 +535,14 @@ if __name__ == '__main__':
     if bool(args['--coordinates']): coordinates_only = True
 
     ignore_indels = False
-    if bool(args['--ignore_indels']): ignore_indels = True
+    if bool(args['--ignore-indels']): ignore_indels = True
+
+    ignore_snvs = False
+    if bool(args['--ignore-snvs']): ignore_snvs = True
+
+    # Sanity check
+    if ignore_indels and ignore_snvs:
+      error( "Cannot ignore all entries in comparison.")      
 
     baseratios = False
     if bool(args['--baseratios']): baseratios = True
@@ -411,6 +554,9 @@ if __name__ == '__main__':
 
     matching = False
     if bool(args['--matching']): matching = True
+
+    pretty = None
+    if bool(args['--pretty']): pretty = 80    
 
     filenames = args['<file>']    
     n_files = len( filenames)
@@ -425,7 +571,13 @@ if __name__ == '__main__':
 
     filterstr = args['--filter']
 
-    # Check that all files exists
+    bedfile = args['--bed']
+    if bedfile != None and len( bedfile) > 0: ReadBed( bedfile, BED)
+
+    ignfile = args['--ignore']
+    if ignfile != None and len( ignfile) > 0: ReadBed( ignfile, IGN)
+
+    # Check that all files exist
     non_existent_files = []
 
     if different == True and n_files != 2:
@@ -455,9 +607,9 @@ if __name__ == '__main__':
       for f in range( n_files):      
         PrintReport( filenames[ f], None if f >= len( col_names) else col_names[ f], baseratios)
     
-    CompareFiles( filenames, col_names, only_standard, filterstr, ignore_indels, 
+    CompareFiles( filenames, col_names, only_standard, filterstr, ignore_indels, ignore_snvs,
                   aCoordinatesOnly=coordinates_only, aPrintMatching=matching, aPrintDifferent=different,
-                  aIdAddition=add_id)
+                  aIdAddition=add_id, aCurbLinesTo=100)
     
     #print "Processed filenames:", filenames
     sys.exit(0)
