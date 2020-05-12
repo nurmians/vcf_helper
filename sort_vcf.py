@@ -13,29 +13,32 @@ because VCF files are required to be zipped with bgzip (block gzip), which can o
 process complete files (not pipes or streams).
 
 Usage:
-  sort_vcf [options] [<file>]  
+  sort_vcf [options] [<file>]
 
 Examples:
-  sort_vcf file.vcf  
+  sort_vcf file.vcf
   sort_vcf file.vcf.gz > file_sorted.vcf
-  gzip -dc file.vcf.gz | sort_vcf -s -n > file_sorted.vcf
-  
+  gzip -dc file.vcf.gz | sort_vcf -s -n -f PASS > file_sorted.vcf
+
 
 Options:
-  -c --chr-prefix       Use chr prefix for standard contigs (chr1-chr22,X,Y) in 
+  -c --chr-prefix       Use chr prefix for standard contigs (chr1-chr22,X,Y) in
                         the output [default].
   -n --no-prefix        Output standard contigs without the chr prefix.
   -t --tmpdir=DIR       Directory for storing temporary files
   -f --filter=STR       Discard data rows without STR
   -s --standard         Output only standard chomosomes (chr1-chr22,X,Y)
-  -a --add-contig=CON   Add contigs to std set of contigs, separate by commas      
+  -a --add-contig=CON   Add contigs to std set of contigs, separate by commas
   -p --processes=N      Maximum number of worker processes to use [default:1]
   -d --disable-sort     Do not sort, only filter (-f) and remove contigs (-s)
   -v --verbose          More output
   -i --indels-only      Output only indels
+  -I --no-indels        Do not output indels
   -k --keep-duplicates  Do not remove duplicates (same chrom, coord & alt)
   -b --bed=FILE         Remove calls outside of specified ranges
   -r --remove           Remove all header and comment lines
+  -H --no-header        Do not output any header lines
+  -C --col-header       Output only the last header line (column names)
 
 
 """
@@ -73,6 +76,7 @@ def info( aMsg):
 
 CONTIG_PATTTERN = re.compile("(##contig=<ID=)(?:chr)*(.*?)([,>].*$)")
 UNEXPECTED_EXIT = True
+WARN_EXIT = True
 REMOVABLE_TMP_FILES =[]
 
 if platform != "linux" and platform != "linux2":
@@ -83,15 +87,15 @@ def ExitHandler():
 
     #global UNEXPECTED_EXIT, REMOVABLE_TMP_FILES
     if UNEXPECTED_EXIT:
-        try: 
-          warning( "Unexpected exit.")
+        try:
+          if WARN_EXIT: warning( "Unexpected exit.")
           n_tmpfiles = len( REMOVABLE_TMP_FILES)
-          if n_tmpfiles > 0: info( "Removing remaining %i temporary file%s." % ( n_tmpfiles, ("" if n_tmpfiles == 1 else "s")))
+          if n_tmpfiles > 0 and WARN_EXIT: info( "Removing remaining %i temporary file%s." % ( n_tmpfiles, ("" if n_tmpfiles == 1 else "s")))
         except: pass
 
         for tmpfile in REMOVABLE_TMP_FILES:
           try: os.remove( tmpfile)
-          except: warning("Could not remove temporary file '%s'." % tmpfile)   
+          except: warning("Could not remove temporary file '%s'." % tmpfile)
 
 
 def EditContig( aLine, aChrPrefix=True, aOnlyStandard=True):
@@ -191,6 +195,15 @@ if __name__ == '__main__':
     indels_only = False
     if bool(args['--indels-only']): indels_only = True
 
+    no_indels = False
+    if bool(args['--no-indels']): no_indels = True
+
+    no_header = False
+    if bool(args['--no-header']): no_header = True
+
+    col_header = False
+    if bool(args['--col-header']): col_header = True
+
     verbose = False
     if bool(args['--verbose']): verbose = True
 
@@ -246,7 +259,8 @@ if __name__ == '__main__':
     header = []
     is_dup = False
     n_duplicates = 0
-    prev = "?"
+    #prev = "?"
+    unique_lines = {}
     line_num = 0
     in_bed_range = 0    
     in_bed_checked = 0
@@ -263,6 +277,10 @@ if __name__ == '__main__':
       contig = ""
 
       if cols[ 0].startswith("#"):
+
+        if no_header: continue
+        if col_header and not cols[ 0].startswith("#CHROM"): continue
+
         # Reformat header contig lines
         if header_ended and not comments_warned and not remove_comments: 
           warning("Encountered comment line outside of header on line %i." % line_num)
@@ -295,13 +313,16 @@ if __name__ == '__main__':
         # CHROM  POS     ID      REF     ALT     QUAL    FILTER  INFO
         if not keep_duplicates:
           cur = "".join(cols[:5]) # join up to ALT
-          if cur == prev:
+          #print "cur '%s', prev '%s'" % (cur, prev)
+          #if cur == prev or 
+          if cur in unique_lines:
             n_duplicates += 1
             if verbose or n_duplicates <= 10:
-              warning( "Skipping duplicate line %i: '%s'" % (line_num, line[:50]))
+              warning( "Skipping duplicate line %i: '%s'" % (line_num, line[:50].strip()))
               if not verbose and n_duplicates == 10: warning("Only first 10 duplicate lines warned.")
             continue
-          prev = cur        
+          #prev = cur
+          unique_lines[ cur] = True
 
         # BED file filtering
         if IsBedUsed():
@@ -318,9 +339,9 @@ if __name__ == '__main__':
         try: 
           tmp_files[ tmpfilename] = open( tmpfilename, "w")
           REMOVABLE_TMP_FILES.append( tmpfilename)
-        except: 
+        except:
           error("Could not create file '%s'." % tmpfilename)
-      
+
       # Filter lines
       if filter_str and len( filter_str):
         if line.find( filter_str) < 0: continue
@@ -328,7 +349,12 @@ if __name__ == '__main__':
       if indels_only:
         #CHROM  POS     ID      REF     ALT     QUAL    FILTER  INFO
         line_cols = line.split( "\t", 5)
-        if len( line_cols[ 3]) == 1 and len( line_cols[ 4]) == 1: continue        
+        if len( line_cols[ 3]) == len( line_cols[ 4]): continue
+
+      if no_indels:
+        line_cols = line.split( "\t", 5)
+        if len( line_cols[ 3]) != len( line_cols[ 4]): continue
+
 
       #Write to tmp file
       if contig in STD_CONTIGS:
@@ -366,7 +392,7 @@ if __name__ == '__main__':
         REMOVABLE_TMP_FILES.append( fn+".sorted")
 
         #print "CMD:", worker_cmd
-        #worker = subprocess.Popen(worker_cmd, shell=True)
+          #worker = subprocess.Popen(worker_cmd, shell=True)
         #workers = [subprocess.Popen(worker_cmd) for w in range(max_workers)]
         #for w in workers: w.wait()
         #worker.wait()
@@ -395,12 +421,19 @@ if __name__ == '__main__':
         except: warning("Could not rename tmp file '%s'" % fn)   
 
     # Print header
-    if not remove_comments:
+    if not remove_comments and not no_header:
       if verbose: info( "Printing header")
   
       htf = tmpfilename_template % "header"
       if len( header) == 0: warning( "File has no header.")
-      else: sys.stdout.write( "".join( header))
+      else: 
+        try:
+          sys.stdout.write( "".join( header))
+        except IOError:
+          # Stream closed
+          WARN_EXIT = False          
+          sys.exit( 0)
+
   
     # Print data rows
     if verbose: info( "Printing each contig...")
@@ -414,8 +447,14 @@ if __name__ == '__main__':
         if verbose: info( "Contig: %s" % cont)
 
         with open( tfs, "r") as tfsh:
-          for line in tfsh:
-            sys.stdout.write( line)
+          try:
+            for line in tfsh:
+              sys.stdout.write( line)
+          except IOError:
+              # Stream closed
+              WARN_EXIT = False
+              sys.exit( 0)
+              #pass
 
         try: 
           os.remove( tfs)
