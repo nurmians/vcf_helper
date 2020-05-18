@@ -1,4 +1,4 @@
-# VCF helper
+# VCF tools
 Python scripts for DNA sequencing data VCF (Variant Call File) manipulation, sorting and comparison.
 
 # sort_vcf.py
