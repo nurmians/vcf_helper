@@ -61,7 +61,10 @@ Options:
                        the variant (identical row) is present.
   -p --pretty          Cut outputted lines to 80 chars.
   -P --no-prefix       Output contigs without "chr" prefix. Default is with
-                       prefix
+                       prefix.
+  -o --outform=FORM    Include characters to display output. T=total SNVs,
+                       M=comparison matrix, C=common counts, P=precision 
+                       and recall, A=All
 
 """
 
@@ -72,6 +75,7 @@ import itertools
 
 # Order to sort contigs by
 STD_CONTIGS = ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","X","Y"]
+STD_CONTIGS_DICT = {"1":True,"2":True,"3":True,"4":True,"5":True,"6":True,"7":True,"8":True,"9":True,"10":True,"11":True,"12":True,"13":True,"14":True,"15":True,"16":True,"17":True,"18":True,"19":True,"20":True,"21":True,"22":True,"X":True,"Y":True}
 
 def error( aMsg):
   sys.stderr.write( "ERROR: "+aMsg+"\n" )
@@ -86,6 +90,11 @@ def info( aMsg):
 #CONTIG_PATTTERN = re.compile("(##contig=<ID=)(?:chr)*(.*?)([,>].*$)")
 STD_BASES = ["A","C","G","T"]
 USE_CHR_PREFIX_IN_OUTPUT = True
+
+# Ranges to include
+BED = {}
+# Ranges to ignore
+IGN = {}
 
 #def EditContig( aLine, aChrPrefix=True, aOnlyStandard=True):
 #
@@ -147,15 +156,13 @@ def PrintReport( aFile, aName=None, aPrintBaseRatios=False):
     else:
       contigs[ contig] += 1
 
-    if IsIgnUsed() and IsInBedRange( cols[ 0], int(cols[ 1]), IGN): 
+    if IsIgnUsed() and IsInBedRange( cols[ 0], cols[ 1], IGN): 
       n_ignored += 1
       continue
 
-    if IsInBedRange( cols[ 0], int(cols[ 1])): stats["in_bed_range"] += 1
+    if IsInBedRange( cols[ 0], cols[ 1], BED): stats["in_bed_range"] += 1
     else: stats["not_in_bed_range"] += 1
       #sys.stderr.write( "Not in range: %s %s\n" % (cols[ 0], cols[ 1]))
-
-
 
     ref = cols[ 3]
     alt = cols[ 4]
@@ -251,17 +258,15 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
           if linenum == 1 and cols[ 1] == "Start": continue # Annovar header             
           cols[ 1] = int( cols[ 1])
 
-
           # Remove 'chr 'to be able to compare "chr1" to "1"
-          if cols[ 0].startswith("chr"): 
-            cols[ 0] = cols[ 0][3:]      
+          cols[ 0] = FormatContig( cols[ 0])          
 
           if aOnlyStandardContigs and cols[ 0] not in STD_CONTIGS: continue        
           two_to_two = (len( cols[ 3]) == 2 and len( cols[ 4]) == 2) #indel GG TT changed into two G T substions later
           if aIgnoreIndels and not two_to_two and (len( cols[ 3]) != 1 or len( cols[ 4]) != 1): continue #Skip indels
           if aIgnoreSnvs and len( cols[ 3]) == len( cols[ 4]): continue
-          if not IsInBedRange( cols[ 0], int(cols[1])): continue
-          if IsIgnUsed() and IsInBedRange( cols[ 0], int(cols[1]), IGN): continue
+          if not IsInBedRange( cols[ 0], cols[1], BED): continue
+          if IsIgnUsed() and IsInBedRange( cols[ 0], cols[ 1], IGN): continue
 
         except Exception as ex:
           if n_errors > 100:
@@ -270,20 +275,24 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
           n_errors += 1
           continue
 
-        if two_to_two:
-          newcols, cols = SplitVcfTwoToTwo( cols)
-          yield newcols
-
-        # Compare columns up to ALT with previously yielded line columns
         if cols[:5] == prev_cols:
-          #if dupwarned == 0:
-          #  warning("Skipping duplicate lines in file '%s'." % vcf_filename)
-          duplines.append( linenum)
-          dupwarned += 1
-          continue # Skip line
+            duplines.append( linenum)
+            dupwarned += 1
+            continue # Skip line     
+        prev_cols = cols[:5]
+
+        if two_to_two:
+          newcols, cols = SplitVcfTwoToTwo( cols)     
+
+          # Yield first of split line
+          yield newcols        
+
+          # Second line could land outside bed or be on ignore list
+          if not IsInBedRange( cols[ 0], cols[1], BED): continue
+          if IsIgnUsed() and IsInBedRange( cols[ 0], cols[ 1], IGN): continue
 
         yield cols
-        prev_cols = cols[:5]
+        
 
     try: file.close()
     except: pass
@@ -296,6 +305,10 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
 NON_STD_CONTIGS = []
 MAX_INDEX = 999999
 
+def FormatContig( aContig):
+  if aContig.startswith("chr") and aContig[3:] in STD_CONTIGS_DICT: aContig = aContig[3:]
+  return aContig
+
 def GetContigIndices( aContigs):
 
   n_contigs = len( aContigs)
@@ -306,8 +319,9 @@ def GetContigIndices( aContigs):
     if contig == None: 
       indices[ c] = MAX_INDEX
       continue
+    
+    contig = FormatContig( contig)
 
-    if contig.startswith("chr"): contig = contig[3:]
     try:      
       indices[ c] = STD_CONTIGS.index( contig)
     except ValueError: #non-std contigs
@@ -357,7 +371,7 @@ def OutputRow( aData, aCurbLen=0):
   global USE_CHR_PREFIX_IN_OUTPUT
 
   chrom = str(aData[ 0])
-  if chrom in STD_CONTIGS and USE_CHR_PREFIX_IN_OUTPUT: aData[ 0] = "chr" + chrom
+  if chrom in STD_CONTIGS_DICT and USE_CHR_PREFIX_IN_OUTPUT: aData[ 0] = "chr" + chrom
 
   out = "\t".join( map( str, aData))
   if aCurbLen != None and aCurbLen > 0 and len( out) > aCurbLen: 
@@ -367,7 +381,7 @@ def OutputRow( aData, aCurbLen=0):
 
 def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, aIgnoreIndels=False, aIgnoreSnvs=False,
                   aCoordinatesOnly=False, aPrintMatching=0, aPrintDifferent=0, aIdAddition=None, aCurbLinesTo=None,
-                  aOutputHeader=False, aExtraHeaderCol=False, aUsePrefix=True):
+                  aOutputHeader=False, aExtraHeaderCol=False, aUsePrefix=True, aOutForm="TMPC"):
 
   n_files = len( aFiles)
 
@@ -440,8 +454,7 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
     # Save results
     trues = [i for i, x in enumerate(rr) if x == True]
     n_trues = len( trues)    
-    #print "TRUES", trues # DEBUG
-    
+
     if set_addition and any( rr): 
       id_addition = "\t".join( ["TRUE" if x == True else "FALSE" for x in rr])      
       # Find first True index in rr
@@ -510,43 +523,65 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
 
     if all( finished) == True: break
   
-  if n_outputted_rows == 0: info( "Nothing to output.")
+  if n_outputted_rows == 0: pass #info( "Nothing to output.")
   elif aPrintMatching > 0 or aPrintDifferent > 0: info( "Outputted %i rows." % n_outputted_rows)
 
   # With flags --different or --matching
   # Do not print statistics
   if aPrintMatching or aPrintDifferent: return
 
-  print ""
-  print "Total number of calls in each file:"
-  for i in range( n_files):
-    print aNames[ i] + ": " + str( total[ i])
+  if "T" in aOutForm:
+    print ""
+    print "Total number of calls in each file:"
+    for i in range( n_files):
+      print aNames[ i] + ": " + str( total[ i])
 
-  print ""
-  if aCurbLinesTo == None:
-    print "##This matrix shows the number of equal calls between two files"
-  print "Comparison matrix:"
-  print "\t","\t".join( aNames)
-  for i in range( n_files):
-    print aNames[ i] + ":", "\t".join( map( str, comp_matrix[ i]))
+  if "M" in aOutForm:
+    print ""
+    if aCurbLinesTo == None:
+      print "##This matrix shows the number of equal calls between two files"
+    print "Comparison matrix:"
+    print "\t","\t".join( aNames)
+    for i in range( n_files):
+      print aNames[ i] + ":", "\t".join( map( str, comp_matrix[ i]))
 
-  print ""
-  if aCurbLinesTo == None:
-    print "##This matrix shows in how many files each call made was found"
-  print "Count matrix:"
-  #print count_matrix
-  print "\t","\t".join( aNames)
-  for i in range( n_files):
-    print ("IN %i:" % (i+1)), "\t".join( map( str, [count_matrix[ x][ i] for x in range( n_files)]))
+  if "C" in aOutForm:
+    print "" 
+    if aCurbLinesTo == None:
+      print "##This matrix shows in how many files each call made was found"
+    print "Count matrix:"
+    #print count_matrix 
+    print "\t","\t".join( aNames)
+    for i in range( n_files):
+      print ("IN %i:" % (i+1)), "\t".join( map( str, [count_matrix[ x][ i] for x in range( n_files)]))
+
+  if "P" in aOutForm and n_files == 2:
+    print ""
+    if aCurbLinesTo == None:
+      print "##Precision and Recall are calculated with 2nd file as ground truth"
+    FP = count_matrix[ 0][ 0]
+    FN = count_matrix[ 1][ 0]
+    TP = count_matrix[ 1][ 1]
+    if TP == 0: 
+      precision = 0.0
+      recall = 0.0
+    else:
+      precision = TP/float( (TP+FP))
+      recall = TP/float( (TP+FN))
+    f_score = 2*((precision*recall)/(precision+recall))    
+    print "[TP: %i, FP: %i, FN: %i]" % (TP,FP,FN)
+    print "Precision: %.2f" % precision
+    print "Recall: %.2f" % recall
+    print "F-score: %.2f" % f_score
+  elif "P" in aOutForm and n_files != 2:
+    warning("Precision and recall only available when comparing exactly two files.")
+
 
   if aCurbLinesTo == None:
     print "All Done."
 
 
-BED = {}
-IGN = {}
-
-def ReadBed( aFilename, aDict=BED):
+def ReadBed( aFilename, aDict=BED, aQuiet=False):
 
   n_contigs = 0
   n_ranges = 0
@@ -567,14 +602,15 @@ def ReadBed( aFilename, aDict=BED):
       start = int(cols[ 1])
       try:
         if is_vcf: end = start
+        elif cols[ 2] == ".": end = start
         else: end = int(cols[ 2])
       except:
         end = start
         if not warned_end_coordinate:
           warning("End coordinate column not found in file '%s' (Using start == end)." % aFilename)
           warned_end_coordinate = True
-      
-      if chromosome.startswith("chr") and chromosome[3:] in STD_CONTIGS: chromosome = chromosome[3:]
+            
+      chromosome = FormatContig( chromosome)
   
       if chromosome not in aDict: 
         aDict[ chromosome] = []
@@ -589,7 +625,7 @@ def ReadBed( aFilename, aDict=BED):
   except: pass
 
   if len(aDict) < 1: error( "Bedfile '%s' contained %i contigs and %i ranges." % (aFilename, n_contigs, n_ranges))
-  info( "Bedfile '%s' contained %i contigs and %i ranges." % (aFilename, n_contigs, n_ranges)) 
+  if not aQuiet: info( "Bedfile '%s' contained %i contigs and %i ranges." % (aFilename, n_contigs, n_ranges)) 
 
   # Sort ranges for each chromosome
   for k in aDict.keys():
@@ -611,17 +647,22 @@ def IsInBedRange( aChromosome, aCoordinate, aDict=BED):
 
   if len( aDict) == 0: return True
 
-  if aChromosome.startswith("chr") and aChromosome[3:] in STD_CONTIGS: aChromosome = aChromosome[3:]
+  try:
+    aCoordinate = int( aCoordinate)
+  except:
+    raise Exception("Could not convert '%s' to integer." % aCoordinate)
+  
+  aChromosome = FormatContig( aChromosome)
+
   if aChromosome not in aDict:
     if aChromosome not in BED_WARNED:
       warning("Contig '%s' not in bed file." % aChromosome)
       BED_WARNED[ aChromosome] = True
     return False
-  for r in aDict[aChromosome]:
+  for r in aDict[ aChromosome]:
     if r[ 0] > aCoordinate: break #start
     if aCoordinate <= r[ 1]: return True #end
   return False
-
 
 
 
@@ -688,15 +729,21 @@ if __name__ == '__main__':
     if col_names == None or len( col_names) == 0: col_names = []
     else: 
       col_names = col_names.split(",")
-      if n_files != len( col_names): warning( "Number of names should equal number of input files (%ivs.%i)" % (len(names),n_files))
+      if n_files != len( col_names): warning( "Number of names should equal number of input files (%ivs.%i)" % (len(col_names),n_files))
 
     filterstr = args['--filter']
 
+    outform = args['--outform']
+    if outform == None or len( outform) == 0: outform = "TMCP"
+    else: 
+      outform = outform.upper()
+      if "A" in outform: outform = "TMCP"
+
     bedfile = args['--bed']
-    if bedfile != None and len( bedfile) > 0: ReadBed( bedfile, BED)
+    if bedfile != None and len( bedfile) > 0: ReadBed( bedfile, BED, aQuiet=(pretty!=None))
 
     ignfile = args['--ignore']
-    if ignfile != None and len( ignfile) > 0: ReadBed( ignfile, IGN)
+    if ignfile != None and len( ignfile) > 0: ReadBed( ignfile, IGN, aQuiet=(pretty!=None))
 
     # Check that all files exist
     non_existent_files = []
@@ -733,10 +780,12 @@ if __name__ == '__main__':
 
         CompareFiles( filenames, col_names, only_standard, filterstr, ignore_indels, ignore_snvs,
                       aCoordinatesOnly=coordinates_only, aPrintMatching=matching, aPrintDifferent=different,
-                      aIdAddition=add_id, aCurbLinesTo=pretty, aOutputHeader=header, aExtraHeaderCol=extra_header_col)
+                      aIdAddition=add_id, aCurbLinesTo=pretty, aOutputHeader=header, aExtraHeaderCol=extra_header_col, 
+                      aOutForm=outform)
     except Exception as ex:
        pass
     
     #print "Processed filenames:", filenames
     sys.exit(0)
    
+
