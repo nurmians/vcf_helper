@@ -83,17 +83,27 @@ Options:
                        bed-file is provided, everything outside the bed
                        ranges is ignored.
   -g --ignore=FILE     File specifying ranges to ignore in the comparison
-                       (Bed file format).
+                       (Bed or VCF file format).
   -i --ignore-indels   Skip (ignore) indels.
   -I --ignore-snvs     Skip (ignore) SNVs (single nucleotide variants).
   -c --coordinates     Do comparison based on contig and coordinate only
   -d --different       Output rows of the first input file that are not 
                        found in the second file.
+  -D --all-different   Output all unmatched rows.
   -m --matching        Output rows of the first input file that are 
-                       found in the second file.
+                       found in all other input files.
+  -M --all-matching    Output all matching rows from all input files.
+                       May create duplicate (identical) rows.
   -w --swap            Swap the first and second input files.
   -f --filter=STR      Ignore data rows without STR.
+  -h --header          Include header row from first input file to
+                       output.
   -a --add-id=STR      Add STR to ID column of each outputted data row.
-  -p --pretty          Cut outputted lines to 80 chars
+  -A --add-info        Generate and insert at the beginning of each row
+                       a string indicating (Y/N) in which input files 
+                       the variant (identical row) is present.
+  -p --pretty          Cut outputted lines to 80 chars.
+  -P --no-prefix       Output contigs without "chr" prefix (Default is with
+                       prefix).
   </pre>
   
