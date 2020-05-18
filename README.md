@@ -103,7 +103,11 @@ Options:
                        a string indicating (Y/N) in which input files 
                        the variant (identical row) is present.
   -p --pretty          Cut outputted lines to 80 chars.
-  -P --no-prefix       Output contigs without "chr" prefix (Default is with
-                       prefix).
+  -P --no-prefix       Output contigs without "chr" prefix. Default is with
+                       prefix.
+  -o --outform=FORM    Include characters to display output. T=total SNVs,
+                       M=comparison matrix, C=common counts, P=precision 
+                       and recall, A=All
+
   </pre>
   
