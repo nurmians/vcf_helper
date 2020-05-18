@@ -9,7 +9,7 @@ chromosomal and coordinate order. If only one input file is specified comp_vcf
 will reports statistics on that file. 
 
 The output contains two matrices: (i) Comparison matrix shows the number of 
-matching variant calls (rows) between eavery two files included in the 
+matching variant calls (rows) between every pair of files included in the 
 comparison. (ii) Count matrix shows for each file in how many of the other 
 files in the comaprison each call is found in. Calls shown on row "IN 1"
 are unique to that file and not found in any of the other files in the
@@ -40,18 +40,28 @@ Options:
                        bed-file is provided, everything outside the bed
                        ranges is ignored.
   -g --ignore=FILE     File specifying ranges to ignore in the comparison
-                       (Bed file format).
+                       (Bed or VCF file format).
   -i --ignore-indels   Skip (ignore) indels.
   -I --ignore-snvs     Skip (ignore) SNVs (single nucleotide variants).
   -c --coordinates     Do comparison based on contig and coordinate only
   -d --different       Output rows of the first input file that are not 
                        found in the second file.
+  -D --all-different   Output all unmatched rows.
   -m --matching        Output rows of the first input file that are 
-                       found in the second file.
+                       found in all other input files.
+  -M --all-matching    Output all matching rows from all input files.
+                       May create duplicate (identical) rows.
   -w --swap            Swap the first and second input files.
   -f --filter=STR      Ignore data rows without STR.
+  -h --header          Include header row from first input file to
+                       output.
   -a --add-id=STR      Add STR to ID column of each outputted data row.
-  -p --pretty          Cut outputted lines to 80 chars
+  -A --add-info        Generate and insert at the beginning of each row
+                       a string indicating (Y/N) in which input files 
+                       the variant (identical row) is present.
+  -p --pretty          Cut outputted lines to 80 chars.
+  -P --no-prefix       Output contigs without "chr" prefix. Default is with
+                       prefix
 
 """
 
@@ -73,8 +83,9 @@ def warning( aMsg):
 def info( aMsg):
   sys.stderr.write( "INFO: "+aMsg+"\n" )
 
-CONTIG_PATTTERN = re.compile("(##contig=<ID=)(?:chr)*(.*?)([,>].*$)")
+#CONTIG_PATTTERN = re.compile("(##contig=<ID=)(?:chr)*(.*?)([,>].*$)")
 STD_BASES = ["A","C","G","T"]
+USE_CHR_PREFIX_IN_OUTPUT = True
 
 #def EditContig( aLine, aChrPrefix=True, aOnlyStandard=True):
 #
@@ -208,7 +219,8 @@ def SplitVcfTwoToTwo( aVcfLineCols):
 
 
 #Generator
-def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgnoreSnvs=False, aFilter=None):
+def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgnoreSnvs=False, aFilter=None,
+             aOutputHeader=False, aExtraHeaderCol=False):
 
     try:
       if vcf_filename.endswith(".gz"): file = gzip.open( vcf_filename,'r')
@@ -219,19 +231,26 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
 
     linenum = 0
     prev_cols = [""]*5
-    dupwarned = False
-
+    dupwarned = 0
+    duplines = []
+    n_errors = 0
 
     for line in file:
 
         linenum += 1
         if not line or len( line) == 0: continue
-        elif line.startswith("#"): continue
+        if aOutputHeader: 
+          aOutputHeader = False
+          if aExtraHeaderCol: sys.stdout.write( "Present in file\t")
+          sys.stdout.write( line)
+        elif line.startswith("#"): continue        
         elif aFilter != None and line.find( aFilter) < 0: continue                
         ##CHROM  POS     ID      REF     ALT  QUAL  PASS   INFO
         try:
           cols = line.split("\t", 5)
+          if linenum == 1 and cols[ 1] == "Start": continue # Annovar header             
           cols[ 1] = int( cols[ 1])
+
 
           # Remove 'chr 'to be able to compare "chr1" to "1"
           if cols[ 0].startswith("chr"): 
@@ -245,7 +264,10 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
           if IsIgnUsed() and IsInBedRange( cols[ 0], int(cols[1]), IGN): continue
 
         except Exception as ex:
+          if n_errors > 100:
+            error("Excessive number of errors (>100), please check the format of file '%s'." % vcf_filename)
           warning( "Bad line format on line %i in file '%s'. (%s)" % (linenum, vcf_filename, str(ex)))
+          n_errors += 1
           continue
 
         if two_to_two:
@@ -254,9 +276,10 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
 
         # Compare columns up to ALT with previously yielded line columns
         if cols[:5] == prev_cols:
-          if not dupwarned:
-            warning("Skipping duplicate lines in file '%s'." % vcf_filename)
-            dupwarned = True          
+          #if dupwarned == 0:
+          #  warning("Skipping duplicate lines in file '%s'." % vcf_filename)
+          duplines.append( linenum)
+          dupwarned += 1
           continue # Skip line
 
         yield cols
@@ -264,6 +287,9 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
 
     try: file.close()
     except: pass
+    if dupwarned > 0:
+      warning("Skipped %i duplicate lines in file '%s'." % (dupwarned, vcf_filename))      
+      warning("Duplicated lines: %s%s" % ((",".join( map( str, duplines)[:10])),("" if duplines < 10 else ",...")))
     yield None
 
 
@@ -326,8 +352,22 @@ def Equal( aRow1, aRow2, aCoordinatesOnly=False):
   return False
 
 
+def OutputRow( aData, aCurbLen=0):
+
+  global USE_CHR_PREFIX_IN_OUTPUT
+
+  chrom = str(aData[ 0])
+  if chrom in STD_CONTIGS and USE_CHR_PREFIX_IN_OUTPUT: aData[ 0] = "chr" + chrom
+
+  out = "\t".join( map( str, aData))
+  if aCurbLen != None and aCurbLen > 0 and len( out) > aCurbLen: 
+    out = out[:aCurbLen] + "\n"
+  sys.stdout.write( out) 
+
+
 def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, aIgnoreIndels=False, aIgnoreSnvs=False,
-                  aCoordinatesOnly=False, aPrintMatching=False, aPrintDifferent=False, aIdAddition=None, aCurbLinesTo=None):
+                  aCoordinatesOnly=False, aPrintMatching=0, aPrintDifferent=0, aIdAddition=None, aCurbLinesTo=None,
+                  aOutputHeader=False, aExtraHeaderCol=False, aUsePrefix=True):
 
   n_files = len( aFiles)
 
@@ -355,13 +395,21 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
 
   file_iters = []
   file_data = []
-  finished = [False]*n_files  
+  finished = [False]*n_files
+
+  if aOutputHeader and aExtraHeaderCol:    
+    #sys.stdout.write("# Input files:\t")
+    for name in aNames: sys.stdout.write("%s\t" % name)
+    #sys.stdout.write("\n")
 
   # Create line generators
   for filename in aFiles:
 
-    # Data is returned as a list of column values
-    file_iters.append( VcfIter( filename, aOnlyStandardContigs, aIgnoreIndels, aIgnoreSnvs, aFilter))
+    # Data is returned as a list of column values 
+    file_iters.append( VcfIter( filename, aOnlyStandardContigs, aIgnoreIndels, aIgnoreSnvs, aFilter, 
+                                aOutputHeader=aOutputHeader, aExtraHeaderCol=False))    
+
+    aOutputHeader = False # only first file prints header
     data = file_iters[ -1].next()
     if data == None:
       error( "File '%s' has no data rows." % filename)
@@ -369,6 +417,13 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
 
 
   total = [1]*n_files
+  n_outputted_rows = 0
+  
+  # Manipulate ID column?
+  set_addition = (aIdAddition != None and aIdAddition == "SET")  
+  id_addition = None
+  if aIdAddition != None: id_addition = str( aIdAddition)
+
 
   while True:
 
@@ -386,18 +441,44 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
     trues = [i for i, x in enumerate(rr) if x == True]
     n_trues = len( trues)    
     #print "TRUES", trues # DEBUG
+    
+    if set_addition and any( rr): 
+      id_addition = "\t".join( ["TRUE" if x == True else "FALSE" for x in rr])      
+      # Find first True index in rr
+      first_true = next(i for i,v in enumerate(rr) if v)
+      file_data[ first_true].insert( 0, id_addition)
+      #print file_data[ first_true]
+      #sys.exit( 0)
+      OutputRow( file_data[ first_true], aCurbLinesTo)
+      n_outputted_rows += 1
 
-    # Only two files in comparison
-    if aPrintMatching and (all( rr) == True):
-      if aIdAddition != None: file_data[ 0][ 2] = str( aIdAddition)
-      out = "\t".join( map( str, file_data[ 0]))
-      if aCurbLinesTo != None and len( out) > aCurbLinesTo: out = out[:aCurbLinesTo] + "\n"
-      sys.stdout.write( out)
-    if aPrintDifferent and rr[ 0] == True and rr[ 1] == False:
-      if aIdAddition != None: file_data[ 0][ 2] = str( aIdAddition)
-      out = "\t".join( map( str, file_data[ 0]))
-      if aCurbLinesTo != None and len( out) > aCurbLinesTo: out = out[:aCurbLinesTo] + "\n"      
-      sys.stdout.write( out)
+    else: # set_addition presence indicator should not be used with -m or -d
+
+      if aPrintMatching > 0 and (all( rr) == True):
+        if id_addition != None: file_data[ 0][ 2] = id_addition
+        OutputRow( file_data[ 0], aCurbLinesTo)
+        n_outputted_rows += 1
+
+        if aPrintMatching > 1:
+          for i in range( 1, n_files):
+            if id_addition != None: file_data[ i][ 2] = id_addition
+            OutputRow( file_data[ i], aCurbLinesTo)
+          n_outputted_rows += 1
+      
+      # Only two files in comparison  
+      #['--different']): different = 1
+      #['--all-different']): different = 2      
+      if aPrintDifferent > 0:
+        if rr[ 0] == True and rr[ 1] == False:
+          if id_addition != None: file_data[ 0][ 2] = id_addition
+          if aPrintDifferent == 2: sys.stdout.write("1:")
+          OutputRow( file_data[ 0], aCurbLinesTo)
+          n_outputted_rows += 1
+        if aPrintDifferent == 2 and rr[ 1] == True and rr[ 0] == False: 
+          if id_addition != None: file_data[ 1][ 2] = id_addition
+          sys.stdout.write("2:")
+          OutputRow( file_data[ 1], aCurbLinesTo)
+          n_outputted_rows += 1
 
     # Self comparison (diagonal)
     # set diagonal true
@@ -429,6 +510,9 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
 
     if all( finished) == True: break
   
+  if n_outputted_rows == 0: info( "Nothing to output.")
+  elif aPrintMatching > 0 or aPrintDifferent > 0: info( "Outputted %i rows." % n_outputted_rows)
+
   # With flags --different or --matching
   # Do not print statistics
   if aPrintMatching or aPrintDifferent: return
@@ -466,25 +550,43 @@ def ReadBed( aFilename, aDict=BED):
 
   n_contigs = 0
   n_ranges = 0
+  warned_end_coordinate = False
+  is_vcf = aFilename.lower().endswith(".vcf") or aFilename.lower().endswith(".vcf.gz")
+
   try:
-    with open( aFilename) as f:
-      for line in f:
-        if line.startswith("#"): continue #Comments
-        if line.startswith("CHROM"): continue #Header
-        cols = line.strip().split("\t")
+
+    if aFilename.endswith(".gz"): f = gzip.open( aFilename,'r')
+    else: f = open( aFilename, "r")
+
+    for line in f:
+      if line.startswith("#"): continue #Comments
+      if line.startswith("CHROM"): continue #Header
+      cols = line.strip().split("\t")
   
-        chromosome = cols[ 0]
-        start = int(cols[ 1])
-        end = int(cols[ 2])
-        if chromosome.startswith("chr") and chromosome[3:] in STD_CONTIGS: chromosome = chromosome[3:]
+      chromosome = cols[ 0]
+      start = int(cols[ 1])
+      try:
+        if is_vcf: end = start
+        else: end = int(cols[ 2])
+      except:
+        end = start
+        if not warned_end_coordinate:
+          warning("End coordinate column not found in file '%s' (Using start == end)." % aFilename)
+          warned_end_coordinate = True
+      
+      if chromosome.startswith("chr") and chromosome[3:] in STD_CONTIGS: chromosome = chromosome[3:]
   
-        if chromosome not in aDict: 
-          aDict[ chromosome] = []
-          n_contigs += 1
-        aDict[ chromosome].append([start,end])
-        n_ranges += 1
+      if chromosome not in aDict: 
+        aDict[ chromosome] = []
+        n_contigs += 1
+      aDict[ chromosome].append([start,end])
+      n_ranges += 1
+
   except Exception as ex:
     error( "Failed to read bed file '%s'. (%s)\n" % (aFilename, str(ex)))
+
+  try: f.close()
+  except: pass
 
   if len(aDict) < 1: error( "Bedfile '%s' contained %i contigs and %i ranges." % (aFilename, n_contigs, n_ranges))
   info( "Bedfile '%s' contained %i contigs and %i ranges." % (aFilename, n_contigs, n_ranges)) 
@@ -492,6 +594,8 @@ def ReadBed( aFilename, aDict=BED):
   # Sort ranges for each chromosome
   for k in aDict.keys():
     aDict[ k].sort(key=lambda x: x[ 0])
+
+
 
 
 
@@ -528,6 +632,8 @@ if __name__ == '__main__':
     report = False    
     if bool(args['--report']): report = True
 
+    if bool(args['--no-prefix']): USE_CHR_PREFIX_IN_OUTPUT = False
+
     only_standard = False
     if bool(args['--standard']): only_standard = True
 
@@ -547,21 +653,36 @@ if __name__ == '__main__':
     baseratios = False
     if bool(args['--baseratios']): baseratios = True
 
-    different = False
-    if bool(args['--different']): different = True
-
-    add_id = args['--add-id']     
-
-    matching = False
-    if bool(args['--matching']): matching = True
+    different = 0
+    if bool(args['--different']): different = 1
+    if bool(args['--all-different']): different = 2
 
     pretty = None
-    if bool(args['--pretty']): pretty = 80    
+    if bool(args['--pretty']): pretty = 80   
+
+    add_id = args['--add-id']
+    extra_header_col = False
+    if bool(args['--add-info']): 
+      add_id = "SET"
+      extra_header_col = True
+      if pretty:
+        warning("--pretty cannot be used with --add-info.")
+        pretty = None
+
+    matching = 0
+    if bool(args['--matching']): matching = 1
+    if bool(args['--all-matching']): matching = 2
+
+ 
 
     filenames = args['<file>']    
     n_files = len( filenames)
     
     if bool(args['--swap']): filenames = filenames[::-1]
+
+    header = False
+    if bool(args['--header']): header = True
+    
 
     col_names = args['--names']
     if col_names == None or len( col_names) == 0: col_names = []
@@ -580,10 +701,11 @@ if __name__ == '__main__':
     # Check that all files exist
     non_existent_files = []
 
-    if different == True and n_files != 2:
+    if different > 0 and n_files != 2:
       error("Option '--different' requires exactly two input files.")
-    if matching == True and n_files != 2:
-      error("Option '--matching' requires exactly two input files.")
+    if matching > 0 and n_files > 2:      
+      info("Outputting SNVs found in all %i input files." % n_files)
+      #error("Option '--matching' requires exactly two input files.")
 
     for f in filenames:      
       if not os.path.isfile( f): 
@@ -607,11 +729,14 @@ if __name__ == '__main__':
       for f in range( n_files):      
         PrintReport( filenames[ f], None if f >= len( col_names) else col_names[ f], baseratios)
     
-    CompareFiles( filenames, col_names, only_standard, filterstr, ignore_indels, ignore_snvs,
-                  aCoordinatesOnly=coordinates_only, aPrintMatching=matching, aPrintDifferent=different,
-                  aIdAddition=add_id, aCurbLinesTo=100)
+    try:
+
+        CompareFiles( filenames, col_names, only_standard, filterstr, ignore_indels, ignore_snvs,
+                      aCoordinatesOnly=coordinates_only, aPrintMatching=matching, aPrintDifferent=different,
+                      aIdAddition=add_id, aCurbLinesTo=pretty, aOutputHeader=header, aExtraHeaderCol=extra_header_col)
+    except Exception as ex:
+       pass
     
     #print "Processed filenames:", filenames
     sys.exit(0)
    
-
