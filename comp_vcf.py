@@ -63,8 +63,8 @@ Options:
   -P --no-prefix       Output contigs without "chr" prefix. Default is with
                        prefix.
   -o --outform=FORM    Include characters to display output. T=total SNVs,
-                       M=comparison matrix, C=common counts, P=precision 
-                       and recall, A=All
+                       M=comparison matrix, C=common counts, P=Precision 
+                       and recall, A=All (default).
 
 """
 
@@ -254,19 +254,43 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
         elif aFilter != None and line.find( aFilter) < 0: continue                
         ##CHROM  POS     ID      REF     ALT  QUAL  PASS   INFO
         try:
-          cols = line.split("\t", 5)
-          if linenum == 1 and cols[ 1] == "Start": continue # Annovar header             
-          cols[ 1] = int( cols[ 1])
+          raw_cols = line.split("\t", 5)
+          if linenum == 1 and raw_cols[ 1] == "Start": continue # Annovar header             
+          raw_cols[ 1] = int( raw_cols[ 1])
 
           # Remove 'chr 'to be able to compare "chr1" to "1"
-          cols[ 0] = FormatContig( cols[ 0])          
+          raw_cols[ 0] = FormatContig( raw_cols[ 0])  
 
-          if aOnlyStandardContigs and cols[ 0] not in STD_CONTIGS: continue        
-          two_to_two = (len( cols[ 3]) == 2 and len( cols[ 4]) == 2) #indel GG TT changed into two G T substions later
-          if aIgnoreIndels and not two_to_two and (len( cols[ 3]) != 1 or len( cols[ 4]) != 1): continue #Skip indels
-          if aIgnoreSnvs and len( cols[ 3]) == len( cols[ 4]): continue
-          if not IsInBedRange( cols[ 0], cols[1], BED): continue
-          if IsIgnUsed() and IsInBedRange( cols[ 0], cols[ 1], IGN): continue
+          multicols = []        
+                
+          if (len( raw_cols[ 3]) > 1 and len( raw_cols[ 3]) == len( raw_cols[ 4])):
+            # MNVs  e.g. AC -> GG
+            # Split to multiple SNVs
+            for m in range( 0, len( raw_cols[ 3])):
+              split_cols = raw_cols[:] #copy
+              split_cols[ 1] += m
+              split_cols[ 3] = split_cols[ 3][ m]
+              split_cols[ 4] = split_cols[ 4][ m]
+              multicols.append( split_cols)
+          else:
+            # SNVs
+            multicols.append( raw_cols)
+
+          for cols in multicols:
+
+            if aOnlyStandardContigs and cols[ 0] not in STD_CONTIGS: continue        
+            #two_to_two = (len( cols[ 3]) == 2 and len( cols[ 4]) == 2) #indel GG TT changed into two G T substions later
+            if aIgnoreIndels and (len( cols[ 3]) != 1 or len( cols[ 4]) != 1): continue #Skip indels
+            if aIgnoreSnvs and len( cols[ 3]) == len( cols[ 4]): continue
+            if not IsInBedRange( cols[ 0], cols[1], BED): continue
+            if IsIgnUsed() and IsInBedRange( cols[ 0], cols[ 1], IGN): continue
+
+            if cols[:5] == prev_cols:
+                duplines.append( linenum)
+                dupwarned += 1
+                continue # Skip line     
+            prev_cols = cols[:5]
+            yield cols
 
         except Exception as ex:
           if n_errors > 100:
@@ -275,23 +299,6 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
           n_errors += 1
           continue
 
-        if cols[:5] == prev_cols:
-            duplines.append( linenum)
-            dupwarned += 1
-            continue # Skip line     
-        prev_cols = cols[:5]
-
-        if two_to_two:
-          newcols, cols = SplitVcfTwoToTwo( cols)     
-
-          # Yield first of split line
-          yield newcols        
-
-          # Second line could land outside bed or be on ignore list
-          if not IsInBedRange( cols[ 0], cols[1], BED): continue
-          if IsIgnUsed() and IsInBedRange( cols[ 0], cols[ 1], IGN): continue
-
-        yield cols
         
 
     try: file.close()
@@ -788,4 +795,3 @@ if __name__ == '__main__':
     #print "Processed filenames:", filenames
     sys.exit(0)
    
-
