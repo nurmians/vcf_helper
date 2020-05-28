@@ -64,14 +64,19 @@ Options:
                        prefix.
   -o --outform=FORM    Include characters to display output. T=total SNVs,
                        M=comparison matrix, C=common counts, P=Precision 
-                       and recall, A=All (default).
+                       and recall, A=All (default:All but P).
+  -t --tabix=CONTIG    Process only contig CONTIG. Requires tabix and .tbi
+                       file.
 
 """
 
 import docopt
 import subprocess, sys, os, datetime, time, re
+#from subprocess import Popen, PIPE
 import gzip
 import itertools
+import datetime
+
 
 # Order to sort contigs by
 STD_CONTIGS = ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","X","Y"]
@@ -86,6 +91,12 @@ def warning( aMsg):
 
 def info( aMsg):
   sys.stderr.write( "INFO: "+aMsg+"\n" )
+
+def debug( aMsg):
+  sys.stderr.write( "DEBUG: "+aMsg+"\n" )
+
+def progress( aMsg):
+  sys.stderr.write( "PROGRESS: "+aMsg+"\n" )
 
 #CONTIG_PATTTERN = re.compile("(##contig=<ID=)(?:chr)*(.*?)([,>].*$)")
 STD_BASES = ["A","C","G","T"]
@@ -223,6 +234,83 @@ def SplitVcfTwoToTwo( aVcfLineCols):
   return (line1, line2)
 
 
+def TabixIter( vcf_filename, aContig, aIgnoreIndels=False, aIgnoreSnvs=False, aFilter=None, aOutputHeader=False, aIsRetry=False ):
+
+
+  #query = '{}:{}-{}'.format(chrom, start, end)
+  if not os.path.isfile( vcf_filename):
+    error("File '%s' not found." % vcf_filename)
+
+  if not os.path.isfile( vcf_filename + ".tbi"):
+    error("Index file '%s' not found." % (vcf_filename + ".tbi"))
+
+  try:
+
+    process = subprocess.Popen(['tabix', '-f', vcf_filename, aContig], stdout=subprocess.PIPE)
+  
+    linenum = 0
+    prev_cols = [""]*5
+    dupwarned = 0
+    duplines = []
+    n_errors = 0
+  
+    for line in process.stdout:
+  
+      linenum += 1
+  
+      if not line or len( line) == 0: continue
+
+      #if aOutputHeader: 
+      #  aOutputHeader = False
+      #  sys.stdout.write( line)
+
+      if line.startswith("#"): continue
+      elif aFilter != None and line.find( aFilter) < 0: continue 
+  
+      raw_cols = line.split("\t", 5)
+      raw_cols[ 0] = FormatContig( raw_cols[ 0])
+      raw_cols[ 1] = int( raw_cols[ 1])
+  
+      multicols = []        
+            
+      if (len( raw_cols[ 3]) > 1 and len( raw_cols[ 3]) == len( raw_cols[ 4])):
+        # MNVs  e.g. AC -> GG
+        # Split to multiple SNVs
+        for m in range( 0, len( raw_cols[ 3])):
+          split_cols = raw_cols[:] #copy
+          split_cols[ 1] += m
+          split_cols[ 3] = split_cols[ 3][ m]
+          split_cols[ 4] = split_cols[ 4][ m]
+          multicols.append( split_cols)
+      else:
+        # SNVs
+        multicols.append( raw_cols)
+  
+      for cols in multicols:
+  
+        if aIgnoreIndels and (len( cols[ 3]) != 1 or len( cols[ 4]) != 1): continue #Skip indels
+        if aIgnoreSnvs and len( cols[ 3]) == len( cols[ 4]): continue
+        if not IsInBedRange( cols[ 0], cols[1], BED): continue
+        if IsIgnUsed() and IsInBedRange( cols[ 0], cols[ 1], IGN): continue
+  
+        if cols[:5] == prev_cols:
+            duplines.append( linenum)
+            dupwarned += 1
+            continue # Skip line
+        prev_cols = cols[:5]
+        yield cols
+  
+    if linenum == 0:
+      warning("No data rows for contig '%s' in file '%s'" % (aContig, vcf_filename))
+  
+    if dupwarned > 0:
+      warning("Skipped %i duplicate lines for contig '%s' in file '%s'." % (dupwarned, aContig, vcf_filename))      
+      warning("Duplicated lines: %s%s" % ((",".join( map( str, duplines)[:10])),("" if duplines < 10 else ",...")))
+
+  except Exception as ex:
+    error( "Could not process file '%s' with tabix. (%s)" % (vcf_filename, str( ex)))
+
+  yield None
 
 
 #Generator
@@ -316,6 +404,11 @@ def FormatContig( aContig):
   if aContig.startswith("chr") and aContig[3:] in STD_CONTIGS_DICT: aContig = aContig[3:]
   return aContig
 
+def ToggleContigFormat( aContig):
+  if aContig.startswith("chr") and aContig[3:] in STD_CONTIGS_DICT: aContig = aContig[3:]
+  elif not aContig.startswith("chr"): aContig = ("chr" + aContig.upper())
+  return aContig
+
 def GetContigIndices( aContigs):
 
   n_contigs = len( aContigs)
@@ -388,7 +481,7 @@ def OutputRow( aData, aCurbLen=0):
 
 def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, aIgnoreIndels=False, aIgnoreSnvs=False,
                   aCoordinatesOnly=False, aPrintMatching=0, aPrintDifferent=0, aIdAddition=None, aCurbLinesTo=None,
-                  aOutputHeader=False, aExtraHeaderCol=False, aUsePrefix=True, aOutForm="TMPC"):
+                  aOutputHeader=False, aExtraHeaderCol=False, aUsePrefix=True, aOutForm="TMCP", aTabixContig=None):
 
   n_files = len( aFiles)
 
@@ -426,16 +519,26 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
   # Create line generators
   for filename in aFiles:
 
-    # Data is returned as a list of column values 
-    file_iters.append( VcfIter( filename, aOnlyStandardContigs, aIgnoreIndels, aIgnoreSnvs, aFilter, 
-                                aOutputHeader=aOutputHeader, aExtraHeaderCol=False))    
+    if aTabixContig == None:
+      # Data is returned as a list of column values 
+      file_iters.append( VcfIter( filename, aOnlyStandardContigs, aIgnoreIndels, aIgnoreSnvs, aFilter, 
+                                  aOutputHeader=aOutputHeader, aExtraHeaderCol=False))    
+      data = file_iters[ -1].next()
+      if data == None:
+        error( "File '%s' has no data rows." % filename)      
+    else:
+      file_iters.append( TabixIter(filename, aTabixContig, aIgnoreIndels, aIgnoreSnvs, aFilter, aOutputHeader=aOutputHeader))
+      data = file_iters[ -1].next()
+
+      if data == None:
+        info("Retrying with contig '%s'." % ToggleContigFormat( aTabixContig))
+        file_iters[ -1] = TabixIter(filename, ToggleContigFormat( aTabixContig), aIgnoreIndels, aIgnoreSnvs, aFilter, aOutputHeader=aOutputHeader)
+        data = file_iters[ -1].next()
+      if data == None:
+        error( "File '%s' has no data rows for contigs '%s' or '%s'." % (filename, aTabixContig, ToggleContigFormat( aTabixContig))) 
 
     aOutputHeader = False # only first file prints header
-    data = file_iters[ -1].next()
-    if data == None:
-      error( "File '%s' has no data rows." % filename)
     file_data.append( data)
-
 
   total = [1]*n_files
   n_outputted_rows = 0
@@ -445,6 +548,8 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
   id_addition = None
   if aIdAddition != None: id_addition = str( aIdAddition)
 
+  progress_counter = 0
+  start_time = datetime.datetime.now()
 
   while True:
 
@@ -500,9 +605,21 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
           OutputRow( file_data[ 1], aCurbLinesTo)
           n_outputted_rows += 1
 
+    # report progress
+    progress_counter += 1
+    if progress_counter > 100000:
+      progress_counter = 0
+      cur_time = datetime.datetime.now()
+      elapsed_time = cur_time - start_time
+      minutes_diff = elapsed_time.total_seconds() / 60.0
+      if minutes_diff > 0.5: # Report ~twice a minute
+        start_time = cur_time
+        if len( file_data) > 0 and len( file_data[ 0]) >= 2:
+          progress( "%s %s" % (file_data[ 0][ 0], file_data[ 0][ 1]))
+
     # Self comparison (diagonal)
     # set diagonal true
-    for t in trues: 
+    for t in trues:
     #  print "self:", t
       comp_matrix[ t][ t] += 1
 
@@ -577,9 +694,9 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
       recall = TP/float( (TP+FN))
     f_score = 2*((precision*recall)/(precision+recall))    
     print "[TP: %i, FP: %i, FN: %i]" % (TP,FP,FN)
-    print "Precision: %.2f" % precision
-    print "Recall: %.2f" % recall
-    print "F-score: %.2f" % f_score
+    print "Precision: %.3f" % precision
+    print "Recall: %.3f" % recall
+    print "F-score: %.3f" % f_score
   elif "P" in aOutForm and n_files != 2:
     warning("Precision and recall only available when comparing exactly two files.")
 
@@ -721,8 +838,6 @@ if __name__ == '__main__':
     if bool(args['--matching']): matching = 1
     if bool(args['--all-matching']): matching = 2
 
- 
-
     filenames = args['<file>']    
     n_files = len( filenames)
     
@@ -740,8 +855,10 @@ if __name__ == '__main__':
 
     filterstr = args['--filter']
 
+    tabix_str = args['--tabix']
+
     outform = args['--outform']
-    if outform == None or len( outform) == 0: outform = "TMCP"
+    if outform == None or len( outform) == 0: outform = "TMC"
     else: 
       outform = outform.upper()
       if "A" in outform: outform = "TMCP"
@@ -788,10 +905,11 @@ if __name__ == '__main__':
         CompareFiles( filenames, col_names, only_standard, filterstr, ignore_indels, ignore_snvs,
                       aCoordinatesOnly=coordinates_only, aPrintMatching=matching, aPrintDifferent=different,
                       aIdAddition=add_id, aCurbLinesTo=pretty, aOutputHeader=header, aExtraHeaderCol=extra_header_col, 
-                      aOutForm=outform)
+                      aOutForm=outform, aTabixContig=tabix_str)
     except Exception as ex:
        pass
     
     #print "Processed filenames:", filenames
     sys.exit(0)
    
+
