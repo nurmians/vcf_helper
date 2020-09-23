@@ -67,7 +67,8 @@ Options:
                        and recall, A=All (default:All but P).
   -t --tabix=CONTIG    Process only contig CONTIG. Requires tabix and .tbi
                        file.
-  -q --quiet           Suppress warnings
+  -q --quiet           Suppress warnings.
+  -R --skip-ref        Skip rows where no ALT has been specified.
 
 """
 
@@ -215,124 +216,73 @@ def PrintReport( aFile, aName=None, aPrintBaseRatios=False):
     for k in sorted( subs.keys()):
       print "%s: %3.1f%%" % (k, int(subs[ k]) / float(n_subs)*100.0 )
 
+# Combinations of indels and SNVs can cause coordinates
+# to become out of order. Keep a sorted buffer of rows
+# before outputting them 
+OUTBUF=[]
+BUFSIZE=25
+BUF_MAX=[]
+BUF_INDEX=-1
 
-# Some callers prefer to report consecutive substitutions as
-# two ref bases changing into two alt bases e.g. CC -> AT
-# For better comparability these lines are split into two.
-# CC -> AT becomes C -> A + C -> T on the next coordinate
-def SplitVcfTwoToTwo( aVcfLineCols):
+def buffered_init():
+  global BUF_INDEX, OUTBUF, BUF_MAX
+  BUF_INDEX += 1
+  OUTBUF.append( list())
+  BUF_MAX.append( 999999999999)
+  return BUF_INDEX
 
-  if len( aVcfLineCols[ 3]) != 2 or len( aVcfLineCols[ 4]) != 2:
-    error( "Line '%s' is not a 2 to 2 indel.")
+def buffered_yield( bi, aOutCols):
+  global OUTBUF, BUFSIZE, BUF_MAX
+  lbuf=len(OUTBUF[bi])
+  if lbuf > 0 and OUTBUF[bi][ 0][ 0] != aOutCols[ 0]: # New contig    
+    buf = buffered_flush( bi)
+    while True:
+      out = buf.next()
+      if out == None: break
+      yield out    
+    lbuf=0
+  OUTBUF[bi].append( aOutCols)
+  if aOutCols[ 1] < BUF_MAX[bi] and lbuf>0: OUTBUF[bi].sort(key=lambda x: x[ 1])
+  BUF_MAX[bi] = OUTBUF[bi][ lbuf] #un-updated length
 
-  line1 = aVcfLineCols[:]
-  line2 = aVcfLineCols[:]
-  line1[ 3] = aVcfLineCols[ 3][ 0]
-  line1[ 4] = aVcfLineCols[ 4][ 0]
-
-  #increase coord
-  line2[ 1] = int( aVcfLineCols[ 1]) + 1
-  line2[ 3] = aVcfLineCols[ 3][ 1]
-  line2[ 4] = aVcfLineCols[ 4][ 1]  
-  return (line1, line2)
-
-
-def TabixIter( vcf_filename, aContig, aIgnoreIndels=False, aIgnoreSnvs=False, aFilter=None, aOutputHeader=False, aIsRetry=False ):
-
-  global QUIET
-
-  #query = '{}:{}-{}'.format(chrom, start, end)
-  if not os.path.isfile( vcf_filename):
-    error("File '%s' not found." % vcf_filename)
-
-  if not os.path.isfile( vcf_filename + ".tbi"):
-    error("Index file '%s' not found." % (vcf_filename + ".tbi"))
-
-  try:
-
-    process = subprocess.Popen(['tabix', '-f', vcf_filename, aContig], stdout=subprocess.PIPE)
-  
-    linenum = 0
-    prev_cols = [""]*5
-    dupwarned = 0
-    duplines = []
-    n_errors = 0
-  
-    for line in process.stdout:
-  
-      linenum += 1
-  
-      if not line or len( line) == 0: continue
-
-      #if aOutputHeader: 
-      #  aOutputHeader = False
-      #  sys.stdout.write( line)
-
-      if line.startswith("#"): continue
-      elif aFilter != None and line.find( aFilter) < 0: continue 
-  
-      raw_cols = line.split("\t", 5)
-      raw_cols[ 0] = FormatContig( raw_cols[ 0])
-      raw_cols[ 1] = int( raw_cols[ 1])
-  
-      multicols = []        
-            
-      if (len( raw_cols[ 3]) > 1 and len( raw_cols[ 3]) == len( raw_cols[ 4])):
-        # MNVs  e.g. AC -> GG
-        # Split to multiple SNVs
-        for m in range( 0, len( raw_cols[ 3])):
-          split_cols = raw_cols[:] #copy
-          split_cols[ 1] += m
-          split_cols[ 3] = split_cols[ 3][ m]
-          split_cols[ 4] = split_cols[ 4][ m]
-          multicols.append( split_cols)
-      else:
-        # SNVs
-        multicols.append( raw_cols)
-  
-      for cols in multicols:
-  
-        if aIgnoreIndels and (len( cols[ 3]) != 1 or len( cols[ 4]) != 1): continue #Skip indels
-        if aIgnoreSnvs and len( cols[ 3]) == len( cols[ 4]): continue
-        if not IsInBedRange( cols[ 0], cols[1], BED): continue
-        if IsIgnUsed() and IsInBedRange( cols[ 0], cols[ 1], IGN): continue
-  
-        if cols[:5] == prev_cols:
-            duplines.append( linenum)
-            dupwarned += 1
-            continue # Skip line
-        prev_cols = cols[:5]
-        yield cols
-  
-    if linenum == 0 and not QUIET:
-      warning("No data rows for contig '%s' in file '%s'" % (aContig, vcf_filename))
-  
-    if dupwarned > 0 and not QUIET:
-      warning("Skipped %i duplicate lines for contig '%s' in file '%s'." % (dupwarned, aContig, vcf_filename))      
-      warning("Duplicated lines: %s%s" % ((",".join( map( str, duplines)[:10])),("" if duplines < 10 else ",...")))
-
-  except Exception as ex:
-    error( "Could not process file '%s' with tabix. (%s)" % (vcf_filename, str( ex)))
-
+  while len( OUTBUF[bi]) >= BUFSIZE: yield OUTBUF[bi].pop( 0) # FIFO
   yield None
-
-
-def VCFmultilineIter( ):
-  pass
-
+  
+def buffered_flush( bi ):
+  global OUTBUF, BUFSIZE, BUF_MAX
+  if len( OUTBUF[bi]) > 1: 
+    OUTBUF[bi].sort(key=lambda x: x[ 1])
+    #info("buffered_flush: \n%s" % ("  \n".join([str(o[0:5]) for o in OUTBUF[bi]])))
+  while len( OUTBUF[bi]) > 0: 
+    #info("flush_yield: \n%s" % (str(OUTBUF[ 0][0:5])))
+    yield OUTBUF[bi].pop( 0) #FIFO
+  BUF_MAX[bi]=999999999999
+  yield None
+    
 
 #Generator 
 def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgnoreSnvs=False, aFilter=None,
-             aOutputHeader=False, aExtraHeaderCol=False, aCoordinatesOnly=False):
+             aOutputHeader=False, aExtraHeaderCol=False, aCoordinatesOnly=False, aSkipRef=False, aTabixContig=None):
 
     global QUIET
 
+    buf_index = buffered_init()
+
     try:
-      if vcf_filename.endswith(".gz"): file = gzip.open( vcf_filename,'r')
+
+      if aTabixContig != None: 
+        if not os.path.isfile( vcf_filename + ".tbi"): error("Index file '%s' not found." % (vcf_filename + ".tbi"))
+        process = subprocess.Popen(['tabix', '-f', vcf_filename, aTabixContig], stdout=subprocess.PIPE)
+        file = process.stdout
+      elif vcf_filename.endswith(".gz"): file = gzip.open( vcf_filename,'r')
       else: file = open( vcf_filename, "r")
   
     except:
-      error("Could not open file '%s'" % aFile)
+
+      if aTabixContig != None:          
+        error( "Could not process file '%s' with tabix. (%s)" % (vcf_filename, str( ex)))
+      else:
+        error("Could not open file '%s'" % aFile)
 
     linenum = 0
     prev_cols = [""]*5
@@ -381,26 +331,34 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
 
             # Create copy of row with only one ALT
             multi_call = raw_cols[:]
-            multi_call[ 4] = multicalls[ mcall_index]
+            alt = multicalls[ mcall_index]
+            if aSkipRef and (alt == "." or alt == "" or alt == " " or alt == "-"): continue # No ALT
+            multi_call[ 4] = alt
 
             multicols = []        
-  
-            if (len( multi_call[ 3]) > 1 and len( multi_call[ 3]) == len( multi_call[ 4])):
+            mlen = len( multi_call[ 3])
+
+            if mlen > 1 and mlen < 6 and mlen == len( multi_call[ 4]):
               # MNVs  e.g. AC -> GG
-              # Split to multiple SNVs
-              for m in range( 0, len( multi_call[ 3])):
+              # Split to multiple SNVs (rows)
+              # Do not split larger MNVs than 5 bases
+              for m in range( 0, mlen):
                 split_cols = multi_call[:] #copy
                 split_cols[ 1] += m
                 split_cols[ 3] = split_cols[ 3][ m]
                 split_cols[ 4] = split_cols[ 4][ m]
                 multicols.append( split_cols)
             else:
-              # SNVs
+              # SNVs, indels and deletions
               multicols.append( multi_call)
   
+            # sort in place according to coordinate
+            #multicols.sort(key=lambda x: x[ 1])
+
             for cols in multicols:
-  
-              if aOnlyStandardContigs and cols[ 0] not in STD_CONTIGS: continue        
+
+              if cols[ 3] == cols[ 4]: continue # Skip matching REF and ALT
+              if aOnlyStandardContigs and cols[ 0] not in STD_CONTIGS: continue
               #two_to_two = (len( cols[ 3]) == 2 and len( cols[ 4]) == 2) #indel GG TT changed into two G T substions later
               if aIgnoreIndels and (len( cols[ 3]) != 1 or len( cols[ 4]) != 1): continue #Skip indels
               if aIgnoreSnvs and len( cols[ 3]) == len( cols[ 4]): continue
@@ -417,7 +375,17 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
                   dupwarned += 1
                   continue # Skip line     
               prev_cols = cols[:5]
-              yield cols
+
+              # Buffered yield
+              buf = buffered_yield( buf_index, cols)
+              #info( "BUF %s: %s" % (vcf_filename, str(cols[ 0:5])))                  
+              while True:
+                bufout = buf.next()                
+                if bufout == None: break
+                #info( "OUT %s: %s" % (vcf_filename, str(bufout[ 0:5])))                  
+                yield bufout
+              #yield cols
+
 
         except Exception as ex:
           if n_errors > 100:
@@ -426,15 +394,23 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
           n_errors += 1
           continue
 
-        
-
     try: file.close()
     except: pass
+
+    # Buffered yield
+    buf = buffered_flush( buf_index) 
+    while True:
+      bufout = buf.next()
+      if bufout == None: break
+      #info( "END %s: %s" % (vcf_filename, str(bufout[ 0:5])))      
+      yield bufout
 
     if dupwarned > 0 and QUIET == False:
       warning("Skipped %i duplicate lines in file '%s'." % (dupwarned, vcf_filename))      
       warning("Duplicated lines in '%s': %s%s" % (os.path.basename(vcf_filename),(",".join( map( str, duplines)[:10])),("" if duplines < 10 else ",...")))
+   
     yield None
+
 
 
 NON_STD_CONTIGS = []
@@ -485,6 +461,19 @@ def MinIndex( aDataCols ):
   min_indices = [x for x in range( n_datacols) if chr_order[ x] == min_chr]
   coordinates = [int( aDataCols[ x][ 1]) for x in min_indices]
   min_coord = min( coordinates)
+  
+  # Check and sort by ALT col value  
+  if coordinates.count( min_coord) > 1:
+    min_candidate_indices = [x for x in range( n_datacols) if (int( aDataCols[ x][ 1]) == min_coord and chr_order[ x] == min_chr)]
+    alts = [aDataCols[ x][ 4] for x in min_candidate_indices]
+    first_alt = sorted( alts)[ 0]
+    alt_index = alts.index( first_alt)
+    dat_col_index = min_candidate_indices[ alt_index]
+    return dat_col_index
+
+
+  #info("coords: %s" % str(map( str, coordinates)))
+  #info("min: %s" % str(min_coord))
 
   for i in min_indices:
     if aDataCols[ i][ 1] == min_coord:
@@ -524,7 +513,8 @@ def OutputRow( aData, aCurbLen=0):
 
 def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, aIgnoreIndels=False, aIgnoreSnvs=False,
                   aCoordinatesOnly=False, aPrintMatching=0, aPrintDifferent=0, aIdAddition=None, aCurbLinesTo=None,
-                  aOutputHeader=False, aExtraHeaderCol=False, aUsePrefix=True, aOutForm="TMCP", aTabixContig=None):
+                  aOutputHeader=False, aExtraHeaderCol=False, aUsePrefix=True, aOutForm="TMCP", aTabixContig=None,
+                  aSkipRef=False):
 
   global QUIET
 
@@ -564,23 +554,25 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
   # Create line generators
   for filename in aFiles:
 
-    if aTabixContig == None:
-      # Data is returned as a list of column values 
-      file_iters.append( VcfIter( filename, aOnlyStandardContigs, aIgnoreIndels, aIgnoreSnvs, aFilter, 
-                                  aOutputHeader=aOutputHeader, aExtraHeaderCol=False, aCoordinatesOnly=aCoordinatesOnly))    
-      data = file_iters[ -1].next()
-      if data == None:
-        error( "File '%s' has no data rows." % filename)      
-    else:
-      file_iters.append( TabixIter(filename, aTabixContig, aIgnoreIndels, aIgnoreSnvs, aFilter, aOutputHeader=aOutputHeader))
-      data = file_iters[ -1].next()
+    # Data is returned as a list of column values 
+    file_iters.append( VcfIter( filename, aOnlyStandardContigs, aIgnoreIndels, aIgnoreSnvs, aFilter, 
+                                aOutputHeader=aOutputHeader, aExtraHeaderCol=False, aCoordinatesOnly=aCoordinatesOnly,
+                                aSkipRef=aSkipRef, aTabixContig=aTabixContig))    
+    data = file_iters[ -1].next()
 
+    if aTabixContig != None:
       if data == None:
         info("Retrying with contig '%s'." % ToggleContigFormat( aTabixContig))
         file_iters[ -1] = TabixIter(filename, ToggleContigFormat( aTabixContig), aIgnoreIndels, aIgnoreSnvs, aFilter, aOutputHeader=aOutputHeader)
         data = file_iters[ -1].next()
       if data == None:
         error( "File '%s' has no data rows for contigs '%s' or '%s'." % (filename, aTabixContig, ToggleContigFormat( aTabixContig))) 
+
+    elif data == None:
+      error( "File '%s' has no data rows." % filename)      
+
+
+
 
     aOutputHeader = False # only first file prints header
     file_data.append( data)
@@ -617,8 +609,7 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
       # Find first True index in rr
       first_true = next(i for i,v in enumerate(rr) if v)
       file_data[ first_true].insert( 0, id_addition)
-      #print file_data[ first_true]
-      #sys.exit( 0)
+
       OutputRow( file_data[ first_true], aCurbLinesTo)
       n_outputted_rows += 1
 
@@ -916,6 +907,9 @@ if __name__ == '__main__':
 
     if bool(args['--quiet']): QUIET = True
 
+    skip_ref = False
+    if bool(args['--skip-ref']): skip_ref = True
+
     header = False
     if bool(args['--header']): header = True
     
@@ -973,16 +967,18 @@ if __name__ == '__main__':
       for f in range( n_files):      
         PrintReport( filenames[ f], None if f >= len( col_names) else col_names[ f], baseratios)
     
-    try:
+    #try:
 
-        CompareFiles( filenames, col_names, only_standard, filterstr, ignore_indels, ignore_snvs,
-                      aCoordinatesOnly=coordinates_only, aPrintMatching=matching, aPrintDifferent=different,
-                      aIdAddition=add_id, aCurbLinesTo=pretty, aOutputHeader=header, aExtraHeaderCol=extra_header_col, 
-                      aOutForm=outform, aTabixContig=tabix_str)
-    except Exception as ex:
-       pass
+    CompareFiles( filenames, col_names, only_standard, filterstr, ignore_indels, ignore_snvs,
+                  aCoordinatesOnly=coordinates_only, aPrintMatching=matching, aPrintDifferent=different,
+                  aIdAddition=add_id, aCurbLinesTo=pretty, aOutputHeader=header, aExtraHeaderCol=extra_header_col, 
+                  aOutForm=outform, aTabixContig=tabix_str, aSkipRef=skip_ref)
+    #except Exception as ex:
+
+       #raise ex
     
     #print "Processed filenames:", filenames
     sys.exit(0)
    
+
 
