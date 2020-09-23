@@ -115,3 +115,16 @@ Options:
 
   </pre>
   
+  Comparing and outputting matching calls between two files in chr17:
+  <pre>
+  comp_vcf -t chr17 -m g2.vcf.gz g2f.vcf.gz
+  </pre>
+  
+  Comparing and outputting calls found only in '1m.vcf':
+  <pre>
+  comp_vcf -d -w 1mf.vcf 1m.vcf
+  </pre>
+  
+  
+  
+  
