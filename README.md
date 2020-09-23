@@ -67,7 +67,7 @@ the prefix, e.g. contig "1" matches "chr1".
 <h5>Compvcf unpacks multiple ALTs for comparisons (if -c not specified)</h5> 
 <pre>"C > A,GT,ATG" => "C > A", "C > GT", "C > ATG"</pre>
 <h5>Compvcf unpacks MNVs for comparisons</h5>
-<pre>"CT > GA" => "C > T", "T > A"</pre>
+<pre>"CT > GA" => "C > G", "T > A"</pre>
 
 <pre>
 Usage:
