@@ -106,8 +106,12 @@ Options:
   -P --no-prefix       Output contigs without "chr" prefix. Default is with
                        prefix.
   -o --outform=FORM    Include characters to display output. T=total SNVs,
-                       M=comparison matrix, C=common counts, P=precision 
-                       and recall, A=All
+                       M=comparison matrix, C=common counts, P=Precision 
+                       and recall, A=All (default:All but P).
+  -t --tabix=CONTIG    Process only contig CONTIG. Requires tabix and .tbi
+                       file.
+  -q --quiet           Suppress warnings.
+  -R --skip-ref        Skip rows where no ALT has been specified.
 
   </pre>
   
