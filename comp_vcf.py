@@ -695,7 +695,7 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
   if "T" in aOutForm:
     print ""
     if aCurbLinesTo == None:
-      print "##This list shows the nof total SNV calls in each file (T)"
+      print "##This list shows the n of total SNV calls in each file (T)"
     print "Total number of calls in each file:"
     for i in range( n_files):
       print aNames[ i] + ": " + str( total[ i])
@@ -703,7 +703,7 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
   if "M" in aOutForm:
     print ""
     if aCurbLinesTo == None:
-      print "##This matrix shows the number of equal calls between two files (M)"
+      print "##This matrix shows the n of equal calls between two files (M)"
     print "Comparison matrix:"
     print "\t","\t".join( aNames)
     for i in range( n_files):
