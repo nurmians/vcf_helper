@@ -289,6 +289,7 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
     dupwarned = 0
     duplines = []
     n_errors = 0
+    ref_warned = 0
 
     for line in file:
 
@@ -319,12 +320,6 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
           # Possibly multiple calls in ALT col
           # e.g. CAAA -> C,CA,CAA,CAAAA,CAAAAA
           # Split as if separate rows
-          # TODO: read in and sort all lines on the same coordinate
-          #       because they can be in different order in different files
-          # TODO: ability to compare
-          #       chr1    1175123 T       TA
-          #       to
-          #       chr1    1175123 TA      T,TAA 
           multicalls = sorted( map( str.strip, raw_cols[ 4].split(",")))
 
           for mcall_index in range( 0, len( multicalls)):
@@ -332,7 +327,9 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
             # Create copy of row with only one ALT
             multi_call = raw_cols[:]
             alt = multicalls[ mcall_index]
-            if aSkipRef and (alt == "." or alt == "" or alt == " " or alt == "-"): continue # No ALT
+            if alt == "." or alt == "" or alt == " " or alt == "-":               
+              if aSkipRef: continue # No ALT
+              ref_warned += 1
             multi_call[ 4] = alt
 
             multicols = []        
@@ -409,6 +406,9 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
       warning("Skipped %i duplicate lines in file '%s'." % (dupwarned, vcf_filename))      
       warning("Duplicated lines in '%s': %s%s" % (os.path.basename(vcf_filename),(",".join( map( str, duplines)[:10])),("" if duplines < 10 else ",...")))
    
+    if ref_warned > 0 and QUIET == False:
+      warning("Found %i no-ALT lines in file '%s'." % (ref_warned, vcf_filename))      
+
     yield None
 
 
