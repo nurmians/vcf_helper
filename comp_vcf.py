@@ -67,6 +67,7 @@ Options:
                        and recall, A=All (default:All but P).
   -t --tabix=CONTIG    Process only contig CONTIG. Requires tabix and .tbi
                        file.
+  -q --quiet           Suppress warnings
 
 """
 
@@ -81,6 +82,8 @@ import datetime
 # Order to sort contigs by
 STD_CONTIGS = ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","X","Y"]
 STD_CONTIGS_DICT = {"1":True,"2":True,"3":True,"4":True,"5":True,"6":True,"7":True,"8":True,"9":True,"10":True,"11":True,"12":True,"13":True,"14":True,"15":True,"16":True,"17":True,"18":True,"19":True,"20":True,"21":True,"22":True,"X":True,"Y":True}
+
+QUIET = False
 
 def error( aMsg):
   sys.stderr.write( "ERROR: "+aMsg+"\n" )
@@ -236,6 +239,7 @@ def SplitVcfTwoToTwo( aVcfLineCols):
 
 def TabixIter( vcf_filename, aContig, aIgnoreIndels=False, aIgnoreSnvs=False, aFilter=None, aOutputHeader=False, aIsRetry=False ):
 
+  global QUIET
 
   #query = '{}:{}-{}'.format(chrom, start, end)
   if not os.path.isfile( vcf_filename):
@@ -300,10 +304,10 @@ def TabixIter( vcf_filename, aContig, aIgnoreIndels=False, aIgnoreSnvs=False, aF
         prev_cols = cols[:5]
         yield cols
   
-    if linenum == 0:
+    if linenum == 0 and not QUIET:
       warning("No data rows for contig '%s' in file '%s'" % (aContig, vcf_filename))
   
-    if dupwarned > 0:
+    if dupwarned > 0 and not QUIET:
       warning("Skipped %i duplicate lines for contig '%s' in file '%s'." % (dupwarned, aContig, vcf_filename))      
       warning("Duplicated lines: %s%s" % ((",".join( map( str, duplines)[:10])),("" if duplines < 10 else ",...")))
 
@@ -313,9 +317,15 @@ def TabixIter( vcf_filename, aContig, aIgnoreIndels=False, aIgnoreSnvs=False, aF
   yield None
 
 
-#Generator
+def VCFmultilineIter( ):
+  pass
+
+
+#Generator 
 def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgnoreSnvs=False, aFilter=None,
-             aOutputHeader=False, aExtraHeaderCol=False):
+             aOutputHeader=False, aExtraHeaderCol=False, aCoordinatesOnly=False):
+
+    global QUIET
 
     try:
       if vcf_filename.endswith(".gz"): file = gzip.open( vcf_filename,'r')
@@ -334,11 +344,14 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
 
         linenum += 1
         if not line or len( line) == 0: continue
-        if aOutputHeader: 
-          aOutputHeader = False
-          if aExtraHeaderCol: sys.stdout.write( "Present in file\t")
+
+        if aOutputHeader and line.startswith("#"): 
+          if aExtraHeaderCol and line.startswith("#CHROM"): 
+            sys.stdout.write( "Present in file\t")          
           sys.stdout.write( line)
-        elif line.startswith("#"): continue        
+          continue
+
+        if line.startswith("#"): continue        
         elif aFilter != None and line.find( aFilter) < 0: continue                
         ##CHROM  POS     ID      REF     ALT  QUAL  PASS   INFO
         try:
@@ -349,36 +362,62 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
           # Remove 'chr 'to be able to compare "chr1" to "1"
           raw_cols[ 0] = FormatContig( raw_cols[ 0])  
 
-          multicols = []        
-                
-          if (len( raw_cols[ 3]) > 1 and len( raw_cols[ 3]) == len( raw_cols[ 4])):
-            # MNVs  e.g. AC -> GG
-            # Split to multiple SNVs
-            for m in range( 0, len( raw_cols[ 3])):
-              split_cols = raw_cols[:] #copy
-              split_cols[ 1] += m
-              split_cols[ 3] = split_cols[ 3][ m]
-              split_cols[ 4] = split_cols[ 4][ m]
-              multicols.append( split_cols)
-          else:
-            # SNVs
-            multicols.append( raw_cols)
+          if aCoordinatesOnly: 
+            yield raw_cols
+            continue
 
-          for cols in multicols:
+          # Possibly multiple calls in ALT col
+          # e.g. CAAA -> C,CA,CAA,CAAAA,CAAAAA
+          # Split as if separate rows
+          # TODO: read in and sort all lines on the same coordinate
+          #       because they can be in different order in different files
+          # TODO: ability to compare
+          #       chr1    1175123 T       TA
+          #       to
+          #       chr1    1175123 TA      T,TAA 
+          multicalls = sorted( map( str.strip, raw_cols[ 4].split(",")))
 
-            if aOnlyStandardContigs and cols[ 0] not in STD_CONTIGS: continue        
-            #two_to_two = (len( cols[ 3]) == 2 and len( cols[ 4]) == 2) #indel GG TT changed into two G T substions later
-            if aIgnoreIndels and (len( cols[ 3]) != 1 or len( cols[ 4]) != 1): continue #Skip indels
-            if aIgnoreSnvs and len( cols[ 3]) == len( cols[ 4]): continue
-            if not IsInBedRange( cols[ 0], cols[1], BED): continue
-            if IsIgnUsed() and IsInBedRange( cols[ 0], cols[ 1], IGN): continue
+          for mcall_index in range( 0, len( multicalls)):
 
-            if cols[:5] == prev_cols:
-                duplines.append( linenum)
-                dupwarned += 1
-                continue # Skip line     
-            prev_cols = cols[:5]
-            yield cols
+            # Create copy of row with only one ALT
+            multi_call = raw_cols[:]
+            multi_call[ 4] = multicalls[ mcall_index]
+
+            multicols = []        
+  
+            if (len( multi_call[ 3]) > 1 and len( multi_call[ 3]) == len( multi_call[ 4])):
+              # MNVs  e.g. AC -> GG
+              # Split to multiple SNVs
+              for m in range( 0, len( multi_call[ 3])):
+                split_cols = multi_call[:] #copy
+                split_cols[ 1] += m
+                split_cols[ 3] = split_cols[ 3][ m]
+                split_cols[ 4] = split_cols[ 4][ m]
+                multicols.append( split_cols)
+            else:
+              # SNVs
+              multicols.append( multi_call)
+  
+            for cols in multicols:
+  
+              if aOnlyStandardContigs and cols[ 0] not in STD_CONTIGS: continue        
+              #two_to_two = (len( cols[ 3]) == 2 and len( cols[ 4]) == 2) #indel GG TT changed into two G T substions later
+              if aIgnoreIndels and (len( cols[ 3]) != 1 or len( cols[ 4]) != 1): continue #Skip indels
+              if aIgnoreSnvs and len( cols[ 3]) == len( cols[ 4]): continue
+              if not IsInBedRange( cols[ 0], cols[1], BED): continue
+              if IsIgnUsed() and IsInBedRange( cols[ 0], cols[ 1], IGN): continue
+  
+              if cols[:5] == prev_cols:
+                  # Note: 
+                  # Duplicate lines can occur like this when unpacking MNVs
+                  # chr1    24032048        .       GC      AT
+                  # chr1    24032049        .       C       T
+                  #info("dupline: %s" % cols[:5])
+                  duplines.append( linenum)
+                  dupwarned += 1
+                  continue # Skip line     
+              prev_cols = cols[:5]
+              yield cols
 
         except Exception as ex:
           if n_errors > 100:
@@ -391,9 +430,10 @@ def VcfIter( vcf_filename, aOnlyStandardContigs=False, aIgnoreIndels=False, aIgn
 
     try: file.close()
     except: pass
-    if dupwarned > 0:
+
+    if dupwarned > 0 and QUIET == False:
       warning("Skipped %i duplicate lines in file '%s'." % (dupwarned, vcf_filename))      
-      warning("Duplicated lines: %s%s" % ((",".join( map( str, duplines)[:10])),("" if duplines < 10 else ",...")))
+      warning("Duplicated lines in '%s': %s%s" % (os.path.basename(vcf_filename),(",".join( map( str, duplines)[:10])),("" if duplines < 10 else ",...")))
     yield None
 
 
@@ -476,12 +516,17 @@ def OutputRow( aData, aCurbLen=0):
   out = "\t".join( map( str, aData))
   if aCurbLen != None and aCurbLen > 0 and len( out) > aCurbLen: 
     out = out[:aCurbLen] + "\n"
-  sys.stdout.write( out) 
+
+  #sys.stdout.write( out) 
+  try: sys.stdout.write( out) 
+  except IOError: sys.exit( 0) 
 
 
 def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, aIgnoreIndels=False, aIgnoreSnvs=False,
                   aCoordinatesOnly=False, aPrintMatching=0, aPrintDifferent=0, aIdAddition=None, aCurbLinesTo=None,
                   aOutputHeader=False, aExtraHeaderCol=False, aUsePrefix=True, aOutForm="TMCP", aTabixContig=None):
+
+  global QUIET
 
   n_files = len( aFiles)
 
@@ -522,7 +567,7 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
     if aTabixContig == None:
       # Data is returned as a list of column values 
       file_iters.append( VcfIter( filename, aOnlyStandardContigs, aIgnoreIndels, aIgnoreSnvs, aFilter, 
-                                  aOutputHeader=aOutputHeader, aExtraHeaderCol=False))    
+                                  aOutputHeader=aOutputHeader, aExtraHeaderCol=False, aCoordinatesOnly=aCoordinatesOnly))    
       data = file_iters[ -1].next()
       if data == None:
         error( "File '%s' has no data rows." % filename)      
@@ -615,7 +660,9 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
       if minutes_diff > 0.5: # Report ~twice a minute
         start_time = cur_time
         if len( file_data) > 0 and len( file_data[ 0]) >= 2:
-          progress( "%s %s" % (file_data[ 0][ 0], file_data[ 0][ 1]))
+          contig = file_data[ 0][ 0]
+          if len(contig) <= 2: contig = "chr" + contig
+          progress( "%s %s" % (contig, file_data[ 0][ 1]))
 
     # Self comparison (diagonal)
     # set diagonal true
@@ -648,7 +695,7 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
     if all( finished) == True: break
   
   if n_outputted_rows == 0: pass #info( "Nothing to output.")
-  elif aPrintMatching > 0 or aPrintDifferent > 0: info( "Outputted %i rows." % n_outputted_rows)
+  elif (aPrintMatching > 0 or aPrintDifferent > 0) and not QUIET: info( "Outputted %i rows." % n_outputted_rows)
 
   # With flags --different or --matching
   # Do not print statistics
@@ -656,6 +703,8 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
 
   if "T" in aOutForm:
     print ""
+    if aCurbLinesTo == None:
+      print "##This list shows the nof total SNV calls in each file (T)"
     print "Total number of calls in each file:"
     for i in range( n_files):
       print aNames[ i] + ": " + str( total[ i])
@@ -663,7 +712,7 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
   if "M" in aOutForm:
     print ""
     if aCurbLinesTo == None:
-      print "##This matrix shows the number of equal calls between two files"
+      print "##This matrix shows the number of equal calls between two files (M)"
     print "Comparison matrix:"
     print "\t","\t".join( aNames)
     for i in range( n_files):
@@ -672,7 +721,7 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
   if "C" in aOutForm:
     print "" 
     if aCurbLinesTo == None:
-      print "##This matrix shows in how many files each call made was found"
+      print "##This matrix shows in how many files each call made was found (C)"
     print "Count matrix:"
     #print count_matrix 
     print "\t","\t".join( aNames)
@@ -682,7 +731,7 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
   if "P" in aOutForm and n_files == 2:
     print ""
     if aCurbLinesTo == None:
-      print "##Precision and Recall are calculated with 2nd file as ground truth"
+      print "##Precision and Recall are calculated with 2nd file as ground truth (P)"
     FP = count_matrix[ 0][ 0]
     FN = count_matrix[ 1][ 0]
     TP = count_matrix[ 1][ 1]
@@ -701,8 +750,10 @@ def CompareFiles( aFiles, aNames=[], aOnlyStandardContigs=False, aFilter=None, a
     warning("Precision and recall only available when comparing exactly two files.")
 
 
-  if aCurbLinesTo == None:
+  if aCurbLinesTo == None and not QUIET:
     print "All Done."
+  else:
+    print ""
 
 
 def ReadBed( aFilename, aDict=BED, aQuiet=False):
@@ -711,6 +762,7 @@ def ReadBed( aFilename, aDict=BED, aQuiet=False):
   n_ranges = 0
   warned_end_coordinate = False
   is_vcf = aFilename.lower().endswith(".vcf") or aFilename.lower().endswith(".vcf.gz")
+  line_num = 0
 
   try:
 
@@ -718,6 +770,7 @@ def ReadBed( aFilename, aDict=BED, aQuiet=False):
     else: f = open( aFilename, "r")
 
     for line in f:
+      line_num += 1
       if line.startswith("#"): continue #Comments
       if line.startswith("CHROM"): continue #Header
       cols = line.strip().split("\t")
@@ -743,13 +796,13 @@ def ReadBed( aFilename, aDict=BED, aQuiet=False):
       n_ranges += 1
 
   except Exception as ex:
-    error( "Failed to read bed file '%s'. (%s)\n" % (aFilename, str(ex)))
+    error( "Failed to read bed file '%s'. Line %i: %s\n" % (aFilename, line_num, str(ex)))
 
   try: f.close()
   except: pass
 
   if len(aDict) < 1: error( "Bedfile '%s' contained %i contigs and %i ranges." % (aFilename, n_contigs, n_ranges))
-  if not aQuiet: info( "Bedfile '%s' contained %i contigs and %i ranges." % (aFilename, n_contigs, n_ranges)) 
+  if not aQuiet and not QUIET: info( "Bedfile '%s' contained %i contigs and %i ranges." % (aFilename, n_contigs, n_ranges)) 
 
   # Sort ranges for each chromosome
   for k in aDict.keys():
@@ -769,6 +822,8 @@ BED_WARNED = {}
 
 def IsInBedRange( aChromosome, aCoordinate, aDict=BED):  
 
+  global QUIET, BED_WARNED
+
   if len( aDict) == 0: return True
 
   try:
@@ -776,16 +831,32 @@ def IsInBedRange( aChromosome, aCoordinate, aDict=BED):
   except:
     raise Exception("Could not convert '%s' to integer." % aCoordinate)
   
-  aChromosome = FormatContig( aChromosome)
+  aChromosome = FormatContig( aChromosome) # e.g. chr19 -> 19
 
   if aChromosome not in aDict:
     if aChromosome not in BED_WARNED:
-      warning("Contig '%s' not in bed file." % aChromosome)
+      if not QUIET: warning("Contig '%s' not in bed file." % aChromosome)
       BED_WARNED[ aChromosome] = True
     return False
+
   for r in aDict[ aChromosome]:
+
+    #DEBUG
+    #if aChromosome == "19":
+    #  between = (r[ 0] < aCoordinate) and (r[ 1] >= aCoordinate)
+    #  
+    #  if between: 
+    #    sys.stderr.write("BED_chr19: ")
+    #    sys.stderr.write("%i" % aCoordinate)        
+    #    sys.stderr.write(" between: %i-%i\n" % (r[ 0], r[ 1]))
+    #  #sys.stderr.write(" start: %i" % (r[ 0] < aCoordinate))
+    #  #sys.stderr.write(" end: %i\n" % (r[ 1] >= aCoordinate))
+
     if r[ 0] > aCoordinate: break #start
-    if aCoordinate <= r[ 1]: return True #end
+    if r[ 1] >= aCoordinate: return True #end
+
+
+
   return False
 
 
@@ -842,6 +913,8 @@ if __name__ == '__main__':
     n_files = len( filenames)
     
     if bool(args['--swap']): filenames = filenames[::-1]
+
+    if bool(args['--quiet']): QUIET = True
 
     header = False
     if bool(args['--header']): header = True

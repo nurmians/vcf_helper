@@ -27,6 +27,7 @@ Options:
   -n --no-prefix        Output standard contigs without the chr prefix.
   -t --tmpdir=DIR       Directory for storing temporary files
   -f --filter=STR       Discard data rows without STR
+  -F --filter-pass      Discard data rows without "PASS"
   -s --standard         Output only standard chomosomes (chr1-chr22,X,Y)
   -a --add-contig=CON   Add contigs to std set of contigs, separate by commas
   -p --processes=N      Maximum number of worker processes to use [default:1]
@@ -36,10 +37,13 @@ Options:
   -I --no-indels        Do not output indels
   -k --keep-duplicates  Do not remove duplicates (same chrom, coord & alt)
   -b --bed=FILE         Remove calls outside of specified ranges
+  -B --exclude=FILE     Remove calls INSIDE of specified ranges
   -r --remove           Remove all header and comment lines
   -H --no-header        Do not output any header lines
   -C --col-header       Output only the last header line (column names)
-
+  -m --minimum=STR      Exclude rows that do not meet minimum criteria.
+                        Possible values: DP, AD, and AF. (depth, allele
+                        frequency, alt depth), example: -m AD=5,AF=0.05,DP=10
 
 """
 
@@ -62,6 +66,8 @@ from sys import platform
 # Order to sort contigs by
 STD_CONTIGS = ["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","X","Y"]
 STD_CONTIGS_DICT = { c : True for c in STD_CONTIGS } 
+
+INVERT_BED=False
 
 def error( aMsg):
   sys.stderr.write( "ERROR: "+aMsg+"\n" )
@@ -110,6 +116,92 @@ def EditContig( aLine, aChrPrefix=True, aOnlyStandard=True):
     return m.group( 1) + ("chr" if (aChrPrefix and is_standard) else "") + m.group( 2) + m.group( 3) + "\n"
 
 
+MIN_FIELDS = ["DP","AD","AF"]
+MIN_VALUES = [0.0,0.0,0.0]
+
+def init_min_filtering( min_str):
+
+  criteria = min_str.split(",")
+
+  for m in criteria:
+    key, val = m.split("=", 2)
+    if key.upper() in MIN_FIELDS:
+      i = MIN_FIELDS.index( key)
+      MIN_VALUES[ i] = float( val)
+
+
+def check_minimum( line, line_num ):
+
+
+  if line.startswith("#"): return True
+  if len( line.strip()) < 5: return True
+
+  indices=[-1,-1,-1]
+  format_col = -1
+
+  cols = line.split()
+
+  #fields_str = "|".join(fields)
+
+  #CHROM  POS ID  REF ALT QUAL  FILTER  INFO  FORMAT
+  for c in range( 7, len( cols)):
+    m = re.search( r"[:^](?:AD|AF|DP):.*(?:AD|AF|DP):.*(?:AD|AF|DP)[:$]", cols[ c])
+    if m:
+      format_col = c
+      break
+
+  if format_col < 0: error("Could not find FORMAT column information for minimum value checks. %i" % line_num)
+  if format_col >= len( cols)-1: error("FORMAT column cannot be last column in file.")
+
+  #GT:AD:AF:DP:F1R2:F2R1:SB
+  format_cols = cols[ format_col].split(":")
+  for f in range( len(MIN_FIELDS)):
+    indices[ f] = format_cols.index( MIN_FIELDS[ f])
+
+  # Just compare last data column
+  data_col_index = len( cols)-2
+  while True:
+
+    data_col_index += 1    
+    if data_col_index == len( cols): break
+    data_cols = cols[ data_col_index].split(":")
+  
+    if len( data_cols) != len( format_cols):
+      error( "Data column size does not match format column size on line: %i. (%i vs. %i)" % (line_num, len( data_cols), len( format_cols)))
+  
+    for f in range( len(MIN_FIELDS)):
+
+      min_value = MIN_VALUES[ f]
+      if min_value < 0.000001: continue
+
+      #0/1:5,1:0.246:6:0,1:4,0:2,3,0,1
+      values = data_cols[ indices[ f]].split(",")
+  
+      # Skip first (REF) if multiple values (AD)
+      if len( values) > 1: values = values[1:]
+  
+      any_match = False
+
+      for v in values:
+        # float conversion can handle strings such as "9.123e-03"
+        vf = float( v)
+        if vf >= min_value: 
+          any_match = True
+          break
+
+      if not any_match:
+        #info("Min criteria filtered on line %i: %s = %.3f" % (line_num, MIN_FIELDS[ f], vf))
+        return False
+
+
+  return True
+
+
+
+
+
+
+
 
 BED = {}
 
@@ -155,6 +247,8 @@ def IsInBedRange( aChromosome, aCoordinate):
 
   if len( BED) == 0: return True
 
+  if INVERT_BED: return IsExcluded( aChromosome, aCoordinate)
+
   if aChromosome.startswith("chr") and aChromosome[3:] in STD_CONTIGS: aChromosome = aChromosome[3:]
   if aChromosome not in BED:
     if aChromosome not in BED_WARNED:
@@ -165,6 +259,20 @@ def IsInBedRange( aChromosome, aCoordinate):
     if r[ 0] > aCoordinate: break #start
     if aCoordinate <= r[ 1]: return True #end
   return False
+
+
+def IsExcluded( aChromosome, aCoordinate):
+
+  if aChromosome.startswith("chr") and aChromosome[3:] in STD_CONTIGS: aChromosome = aChromosome[3:]
+
+  # return True if coord not in excluded ranges
+  if aChromosome not in BED: return True
+
+  for r in BED[aChromosome]:
+    if r[ 0] > aCoordinate: break #start
+    if aCoordinate <= r[ 1]: return False #end
+
+  return True
 
 
 
@@ -188,6 +296,13 @@ if __name__ == '__main__':
     if bool(args['--standard']): only_standard = True
     filename = args['<file>']    
     filter_str = args['--filter']    
+    if bool(args['--filter-pass']): filter_str = "PASS"
+
+    min_str = args['--minimum'] 
+    do_check_min = False
+    if min_str and len( min_str): 
+      init_min_filtering( min_str)
+      do_check_min = True
 
     disable_sort = False
     if bool(args['--disable-sort']): disable_sort = True
@@ -210,8 +325,15 @@ if __name__ == '__main__':
     keep_duplicates = False
     if bool(args['--keep-duplicates']): keep_duplicates = True
 
+    INVERT_BED = False
     bedfile = args['--bed']
     if bedfile != None and len( bedfile) > 0: ReadBed( bedfile)
+
+    bedfile = args['--exclude']
+    if bedfile != None and len( bedfile) > 0: 
+      ReadBed( bedfile)
+      INVERT_BED = True
+
 
     remove_comments = False
     remove_comments = args['--remove']
@@ -227,7 +349,9 @@ if __name__ == '__main__':
 
 
     if (not filename or len( filename) == 0):
-      if sys.stdin.isatty(): error('No filename or input provided.')
+      if sys.stdin.isatty(): 
+        UNEXPECTED_EXIT = False
+        error('No filename or input provided.')
       input_handle = sys.stdin
     else:
 
@@ -266,6 +390,7 @@ if __name__ == '__main__':
     in_bed_checked = 0
     header_ended = False
     comments_warned = False
+    n_min_filtered = 0
 
     # Process input
     # Sort lines into separate files based on the contig
@@ -345,6 +470,11 @@ if __name__ == '__main__':
       # Filter lines
       if filter_str and len( filter_str):
         if line.find( filter_str) < 0: continue
+
+
+      if do_check_min and not check_minimum( line, line_num ): 
+        n_min_filtered += 1
+        continue
 
       if indels_only:
         #CHROM  POS     ID      REF     ALT     QUAL    FILTER  INFO
@@ -466,6 +596,9 @@ if __name__ == '__main__':
 
     if IsBedUsed():
       info( "%.1f%% of sorted calls found in bed range." % (float(in_bed_range)/in_bed_checked*100.0))
+
+    if do_check_min:
+      info( "%i calls were filtered out based on the set minumum criteria." % n_min_filtered)
 
     UNEXPECTED_EXIT = False
     if verbose: info( "All Done.")
