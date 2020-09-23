@@ -967,15 +967,14 @@ if __name__ == '__main__':
       for f in range( n_files):      
         PrintReport( filenames[ f], None if f >= len( col_names) else col_names[ f], baseratios)
     
-    #try:
+    try:
 
-    CompareFiles( filenames, col_names, only_standard, filterstr, ignore_indels, ignore_snvs,
-                  aCoordinatesOnly=coordinates_only, aPrintMatching=matching, aPrintDifferent=different,
-                  aIdAddition=add_id, aCurbLinesTo=pretty, aOutputHeader=header, aExtraHeaderCol=extra_header_col, 
-                  aOutForm=outform, aTabixContig=tabix_str, aSkipRef=skip_ref)
-    #except Exception as ex:
-
-       #raise ex
+      CompareFiles( filenames, col_names, only_standard, filterstr, ignore_indels, ignore_snvs,
+                    aCoordinatesOnly=coordinates_only, aPrintMatching=matching, aPrintDifferent=different,
+                    aIdAddition=add_id, aCurbLinesTo=pretty, aOutputHeader=header, aExtraHeaderCol=extra_header_col, 
+                    aOutForm=outform, aTabixContig=tabix_str, aSkipRef=skip_ref)
+    except Exception as ex:
+      pass
     
     #print "Processed filenames:", filenames
     sys.exit(0)
