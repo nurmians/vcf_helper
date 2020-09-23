@@ -115,15 +115,39 @@ Options:
 
   </pre>
   
-  Comparing and outputting matching calls between two files in chr17:
-  <pre>
-  comp_vcf -t chr17 -m g2.vcf.gz g2f.vcf.gz
-  </pre>
+<h3>Comparing two files</h3>
+
+<pre>
+compvcf 1m.vcf 1mf.vcf
+
+##This list shows the nof total SNV calls in each file (T)
+Total number of calls in each file:
+1m.vcf: 3
+1mf.vcf: 2
+
+##This matrix shows the number of equal calls between two files (M)
+Comparison matrix:
+        1m.vcf  1mf.vcf
+1m.vcf: 3       2
+1mf.vcf: 2      2
+
+##This matrix shows in how many files each call made was found (C)
+Count matrix:
+        1m.vcf  1mf.vcf
+IN 1: 1 0
+IN 2: 2 2
+</pre>
+
   
-  Comparing and outputting calls found only in '1m.vcf':
-  <pre>
-  comp_vcf -d -w 1mf.vcf 1m.vcf
-  </pre>
+Comparing and outputting matching calls in chr17:
+<pre>
+comp_vcf -t chr17 -m g2.vcf.gz g2f.vcf.gz
+</pre>
+  
+Comparing and outputting calls found only in '1m.vcf':
+<pre>
+comp_vcf -d -w 1mf.vcf 1m.vcf
+</pre>
   
   
   
