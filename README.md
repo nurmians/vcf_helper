@@ -46,7 +46,7 @@ Options:
 # comp_vcf.py
 
 A tool for comparing VCFs (Variant Call Files) and reporting common and unique
-called variants in each file. The VCF files must be sorted to the exact same
+variants called in each file. The VCF files must be sorted to the exact same
 chromosomal and coordinate order. If only one input file is specified comp_vcf
 will reports statistics on that file. 
 
