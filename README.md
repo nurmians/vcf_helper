@@ -118,9 +118,9 @@ Options:
 <h3>Comparing two files</h3>
 
 <pre>
-compvcf 1m.vcf 1mf.vcf
+comp_vcf 1m.vcf 1mf.vcf
 
-##This list shows the nof total SNV calls in each file (T)
+##This list shows the number of total SNV calls in each file (T)
 Total number of calls in each file:
 1m.vcf: 3
 1mf.vcf: 2
